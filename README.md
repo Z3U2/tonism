@@ -48,4 +48,4 @@ See [docs/adr/](docs/adr/) for the load-bearing decisions:
 
 - [ADR-001](docs/adr/001-language-choice.md) — Rust + nih-plug + cpal stack
 - [ADR-002](docs/adr/002-standalone-runner.md) — nih-plug standalone as audio entry point
-- [ADR-003](docs/adr/003-gui-library.md) — `nih_plug_vizia` via BillyDM fork
+- [ADR-003](docs/adr/003-gui-library.md) — `vizia_plug` via `vizia/vizia-plug`

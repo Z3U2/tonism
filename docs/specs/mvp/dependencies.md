@@ -18,9 +18,9 @@
 ## Dependencies
 
 - Standalone runner: **nih-plug standalone** — single path to plugin export later (alt: raw `cpal` + `winit`)
-- GUI framework: **VIZIA** via nih-plug adapter — audio-specific knob/meter widgets (alt: `egui`)
+- GUI framework: **`nih_plug_vizia`** via BillyDM fork — audio-specific knob/meter widgets (see [ADR-003](../../adr/003-gui-library.md)) (alt: `egui`)
 - Audio I/O: **`cpal`** via nih-plug — CoreAudio/JACK/WASAPI covered (alt: direct `cpal`)
-- Lock-free GUI ↔ audio primitive: **`triple_buffer`** for parameter snapshot — bounded, RT-safe (alt: SPSC `ringbuf` of param events)
+- Lock-free GUI ↔ audio primitive: **`triple_buffer`** for parameter snapshot — bounded, RT-safe (deferred for MVP — nih-plug params suffice; revisit for v0.2 multi-block snapshots) (alt: SPSC `ringbuf` of param events)
 - Logging crate: **`tracing`** + `tracing-subscriber` — standards' leading candidate (alt: `log` + `env_logger`)
 - Error library: **`thiserror`** in domain, `anyhow` at shell — standards' leading candidate (alt: hand-rolled enums)
 - Crate layout: **single crate**, modules `domain` / `audio` / `gui` — week-1 solo scope (alt: cargo workspace)

@@ -6,3 +6,18 @@ edition = "2021"
 [[bin]]
 name = "tonism"
 path = "src/main.rs"
+
+[dependencies]
+nih_plug = { git = "https://github.com/BillyDM/nih-plug", features = ["standalone"] }
+vizia_plug = { git = "https://github.com/vizia/vizia-plug" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+thiserror = "2"
+anyhow = "1"
+
+# Patch: temporarily route nih_plug through our fork to pick up the macOS/Windows
+# vst3 import fix. Drop this once https://github.com/BillyDM/nih-plug/pull/<TBD>
+# is merged. See ADR-002 / ADR-003 for context.
+[patch."https://github.com/BillyDM/nih-plug"]
+nih_plug = { git = "https://github.com/Z3U2/nih-plug", branch = "fix-macos-windows-vst3-import" }

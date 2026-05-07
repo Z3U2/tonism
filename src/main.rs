@@ -1,3 +1,6 @@
+use nih_plug::prelude::*;
+use tonism::audio::plugin::TonismPlugin;
+
 fn main() {
-    println!("Hello, world!");
+    nih_export_standalone::<TonismPlugin>();
 }

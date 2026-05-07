@@ -15,6 +15,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 thiserror = "2"
 anyhow = "1"
+# rtrb is already a transitive dep via nih-plug; pinned here so the audio
+# log bridge can reference it directly without going through nih-plug internals.
+rtrb = "0.3"
 
 # Patch: temporarily route nih_plug through our fork to pick up the macOS/Windows
 # vst3 import fix. Drop this once https://github.com/BillyDM/nih-plug/pull/<TBD>

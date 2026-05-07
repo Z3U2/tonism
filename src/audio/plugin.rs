@@ -111,11 +111,21 @@ impl Plugin for TonismPlugin {
 
     /// Process one block of audio.
     ///
-    /// Signal path (when not bypassed):
-    ///   [optional: replace input with 440 Hz sine]
-    ///   → input_gain (sample-accurate smoothed)
-    ///   → domain Gain block
-    ///   → output_gain (sample-accurate smoothed)
+    /// Signal path (when not bypassed), three explicit stages:
+    ///
+    /// **Stage 1** — test-signal injection + input_gain (sample-accurate smoothed).
+    ///   Iterates samples frame-by-frame: optionally replaces input with a 440 Hz
+    ///   sine, then scales by the current smoothed input_gain value.  Phase
+    ///   accumulator and smoother both advance once per frame.
+    ///
+    /// **Stage 2** — domain Gain block (per-channel slice).
+    ///   Calls `gain_block.process(channel)` on each raw channel slice.  This is
+    ///   the extension point for v0.2 non-linear DSP (distortion, saturation, …);
+    ///   it must sit between the two gain trims so the overall path remains
+    ///   `input_gain → [domain block] → output_gain`.
+    ///
+    /// **Stage 3** — output_gain (sample-accurate smoothed).
+    ///   A second frame-by-frame pass advances the output smoother once per frame.
     ///
     /// A2-safety: no alloc, no lock, no syscall anywhere in this function.
     /// - `bypass.value()` / `test_signal.value()` — atomic reads.
@@ -137,35 +147,34 @@ impl Plugin for TonismPlugin {
         let test_signal = self.params.test_signal.value();
         let phase_inc = TAU * 440.0 / self.sample_rate;
 
-        // Single-pass per-sample processing: apply input gain, then output gain.
-        // The domain Gain block is applied per-channel on the raw slices after
-        // this loop (channel-slice API, no per-sample overhead).
+        // Stage 1: optionally replace input with the 440 Hz sine, then apply input_gain.
+        // Smoother::next() advances one step per frame; phase advances once per frame.
         for channel_samples in buffer.iter_samples() {
-            let in_gain_linear: GainLinear = Decibels(self.params.input_gain.smoothed.next()).into();
-            let out_gain_linear: GainLinear =
-                Decibels(self.params.output_gain.smoothed.next()).into();
-
-            // Compute sine once per frame; all channels get the same test tone.
+            let in_gain: GainLinear = Decibels(self.params.input_gain.smoothed.next()).into();
             let sine = self.phase.sin();
             self.phase = (self.phase + phase_inc) % TAU;
-
             for sample in channel_samples {
                 if test_signal {
                     // Replace input with the 440 Hz sine (AC1 test-signal path).
                     // Phase 4 ships the toggle; latency-measurement algorithm is dev work.
                     *sample = sine;
                 }
-
-                // Apply input gain then output gain in one multiply sequence.
-                *sample *= in_gain_linear.0;
-                *sample *= out_gain_linear.0;
+                *sample *= in_gain.0;
             }
         }
 
-        // Apply the domain Gain block per channel (proves the Process trait path is live).
+        // Stage 2: domain Gain block (per channel slice).
         // `as_slice()` returns `&mut [&mut [f32]]` — one contiguous slice per channel.
         for channel in buffer.as_slice() {
             self.gain_block.process(channel);
+        }
+
+        // Stage 3: apply output_gain.  Smoother advances one step per frame.
+        for channel_samples in buffer.iter_samples() {
+            let out_gain: GainLinear = Decibels(self.params.output_gain.smoothed.next()).into();
+            for sample in channel_samples {
+                *sample *= out_gain.0;
+            }
         }
 
         ProcessStatus::Normal

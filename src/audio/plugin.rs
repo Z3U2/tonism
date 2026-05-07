@@ -1,7 +1,10 @@
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
-use nih_plug::prelude::*;
+use nih_plug::prelude::{
+    AsyncExecutor, AudioIOLayout, AuxiliaryBuffers, Buffer, Editor, Params, Plugin, PortNames,
+    ProcessContext, ProcessStatus,
+};
 
 use super::params::TonismParams;
 
@@ -49,6 +52,10 @@ impl Plugin for TonismPlugin {
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
+    }
+
+    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+        crate::gui::editor::create(self.params.clone())
     }
 
     /// Stub: Phase 4 wires bypass, input/output gain, and the domain Gain block.

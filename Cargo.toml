@@ -1,0 +1,8 @@
+[package]
+name = "tonism"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "tonism"
+path = "src/main.rs"

@@ -105,7 +105,8 @@ impl Plugin for TonismPlugin {
         self.sample_rate = buffer_config.sample_rate;
         // Reset the gain block for the new sample rate (no-op for static gain,
         // but establishes the pattern for stateful blocks in v0.2).
-        self.gain_block.reset(SampleRate(buffer_config.sample_rate as u32));
+        self.gain_block
+            .reset(SampleRate(buffer_config.sample_rate as u32));
         true
     }
 

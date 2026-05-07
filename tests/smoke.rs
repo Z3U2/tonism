@@ -19,7 +19,10 @@ fn unity_gain_passes_kronecker_impulse_unchanged() {
     backend.run(&mut gain, SampleRate(48_000));
     let out = backend.into_output();
     assert_eq!(out.len(), 1024);
-    assert!((out[0] - 1.0).abs() < 1e-6, "impulse peak should pass through unity gain");
+    assert!(
+        (out[0] - 1.0).abs() < 1e-6,
+        "impulse peak should pass through unity gain"
+    );
     for &s in &out[1..] {
         assert!(s.abs() < 1e-6, "non-peak samples should remain zero");
     }
@@ -56,7 +59,11 @@ fn boundary_sample_rates_all_drive_gain_block() {
         let mut gain = Gain { db: Decibels(-6.0) };
         backend.run(&mut gain, SampleRate(sr));
         let out = backend.into_output();
-        assert_eq!(out.len(), input.len(), "sample_rate {sr}: output length mismatch");
+        assert_eq!(
+            out.len(),
+            input.len(),
+            "sample_rate {sr}: output length mismatch"
+        );
         // -6 dB ≈ 0.501; check the impulse peak.
         let expected = 10f32.powf(-6.0 / 20.0);
         assert!(

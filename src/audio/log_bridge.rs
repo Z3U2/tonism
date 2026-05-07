@@ -39,10 +39,11 @@ pub struct AudioLogger {
     dropped: Arc<AtomicU64>,
 }
 
-// The audio thread is the sole writer; no other thread holds the Producer.
+// SAFETY: only the audio thread holds the producer; `rtrb::Producer<T>: Send`
+// when `T: Send`, and `UnsafeCell<T>: Send` when `T: Send`, so this impl is a
+// no-op assertion that the type system already permits — but UnsafeCell makes
+// auto-Send opaque, hence the explicit impl.
 unsafe impl Send for AudioLogger {}
-// We never hand out &mut references across threads.
-unsafe impl Sync for AudioLogger {}
 
 impl AudioLogger {
     /// Push an event to the drain thread.  Non-blocking; if the ring buffer is

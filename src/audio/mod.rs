@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod log_bridge;
 pub mod params;
 pub mod plugin;

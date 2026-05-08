@@ -13,7 +13,7 @@ impl Process for Gain {
     fn process(&mut self, buffer: &mut [f32]) {
         let gain_linear: GainLinear = self.db.into();
         for s in buffer {
-            *s *= gain_linear.0;
+            *s *= gain_linear.value();
         }
     }
 
@@ -27,7 +27,9 @@ mod tests {
 
     #[test]
     fn zero_db_leaves_buffer_unchanged() {
-        let mut gain = Gain { db: Decibels(0.0) };
+        let mut gain = Gain {
+            db: Decibels::new(0.0),
+        };
         let original = vec![0.5_f32, -0.3, 1.0, 0.0, -1.0];
         let mut buffer = original.clone();
         gain.process(&mut buffer);
@@ -42,7 +44,9 @@ mod tests {
     /// +6 dB roughly doubles amplitude; verifies upward scaling (≈ 1.995 within 1e-3).
     #[test]
     fn positive_db_scales_up() {
-        let mut gain = Gain { db: Decibels(6.0) };
+        let mut gain = Gain {
+            db: Decibels::new(6.0),
+        };
         let mut buf = [1.0_f32];
         gain.process(&mut buf);
         assert!((buf[0] - 1.995).abs() < 1e-3, "got {}", buf[0]);
@@ -51,7 +55,9 @@ mod tests {
     /// -6 dB roughly halves amplitude; verifies downward scaling (≈ 0.501 within 1e-3).
     #[test]
     fn negative_db_scales_down() {
-        let mut gain = Gain { db: Decibels(-6.0) };
+        let mut gain = Gain {
+            db: Decibels::new(-6.0),
+        };
         let mut buf = [1.0_f32];
         gain.process(&mut buf);
         assert!((buf[0] - 0.501).abs() < 1e-3, "got {}", buf[0]);
@@ -61,7 +67,7 @@ mod tests {
     #[test]
     fn very_small_db_near_unity() {
         let mut gain = Gain {
-            db: Decibels(0.001),
+            db: Decibels::new(0.001),
         };
         let mut buf = [1.0_f32];
         gain.process(&mut buf);
@@ -72,7 +78,7 @@ mod tests {
     #[test]
     fn large_positive_db_no_clip() {
         let mut gain = Gain {
-            db: Decibels(120.0),
+            db: Decibels::new(120.0),
         };
         let mut buf = [1.0_f32];
         gain.process(&mut buf);
@@ -83,7 +89,7 @@ mod tests {
     #[test]
     fn neg_infinity_db_silences_buffer() {
         let mut gain = Gain {
-            db: Decibels(f32::NEG_INFINITY),
+            db: Decibels::new(f32::NEG_INFINITY),
         };
         let mut buf = [1.0_f32, -0.5, 0.75];
         gain.process(&mut buf);
@@ -96,7 +102,7 @@ mod tests {
     #[test]
     fn nan_db_propagates_nan() {
         let mut gain = Gain {
-            db: Decibels(f32::NAN),
+            db: Decibels::new(f32::NAN),
         };
         let mut buf = [1.0_f32];
         gain.process(&mut buf);
@@ -106,14 +112,18 @@ mod tests {
     /// Processing an empty slice must not panic (boundary: zero-length buffer).
     #[test]
     fn empty_buffer_does_not_panic() {
-        let mut gain = Gain { db: Decibels(6.0) };
+        let mut gain = Gain {
+            db: Decibels::new(6.0),
+        };
         gain.process(&mut []);
     }
 
     /// A single-element buffer scaled by +6 dB yields ≈ 3.99 within 1e-3.
     #[test]
     fn single_sample_buffer() {
-        let mut gain = Gain { db: Decibels(6.0) };
+        let mut gain = Gain {
+            db: Decibels::new(6.0),
+        };
         let mut buf = [2.0_f32];
         gain.process(&mut buf);
         assert!((buf[0] - 3.99).abs() < 1e-3, "got {}", buf[0]);

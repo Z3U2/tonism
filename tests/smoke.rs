@@ -15,8 +15,10 @@ use tonism::domain::types::{Decibels, SampleRate};
 fn unity_gain_passes_kronecker_impulse_unchanged() {
     let input = kronecker_impulse(1024);
     let mut backend = BufferBackend::new(input.clone(), 128);
-    let mut gain = Gain { db: Decibels(0.0) };
-    backend.run(&mut gain, SampleRate(48_000));
+    let mut gain = Gain {
+        db: Decibels::new(0.0),
+    };
+    backend.run(&mut gain, SampleRate::new(48_000.0));
     let out = backend.into_output();
     assert_eq!(out.len(), 1024);
     assert!(
@@ -31,11 +33,11 @@ fn unity_gain_passes_kronecker_impulse_unchanged() {
 #[test]
 fn boundary_buffer_sizes_all_pass_unity_gain() {
     let input = kronecker_impulse(2048);
-    let gain_db = Decibels(0.0);
+    let gain_db = Decibels::new(0.0);
     for &bs in BUFFER_SIZES {
         let mut backend = BufferBackend::new(input.clone(), bs as usize);
         let mut gain = Gain { db: gain_db };
-        backend.run(&mut gain, SampleRate(48_000));
+        backend.run(&mut gain, SampleRate::new(48_000.0));
         let out = backend.into_output();
         assert_eq!(
             out.len(),
@@ -56,8 +58,10 @@ fn boundary_sample_rates_all_drive_gain_block() {
     let input = kronecker_impulse(256);
     for &sr in SAMPLE_RATES {
         let mut backend = BufferBackend::new(input.clone(), 64);
-        let mut gain = Gain { db: Decibels(-6.0) };
-        backend.run(&mut gain, SampleRate(sr));
+        let mut gain = Gain {
+            db: Decibels::new(-6.0),
+        };
+        backend.run(&mut gain, SampleRate::new(sr as f32));
         let out = backend.into_output();
         assert_eq!(
             out.len(),

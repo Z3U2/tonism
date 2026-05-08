@@ -23,6 +23,6 @@ pub fn kronecker_impulse(n: usize) -> Vec<f32> {
 /// `secs` seconds of silence at `sr`.  Used for the AC2 5-min idle-path fixture.
 #[allow(dead_code)]
 pub fn silent_buffer(secs: f32, sr: SampleRate) -> Vec<f32> {
-    let n = (secs * sr.0 as f32) as usize;
+    let n = (secs * sr.value()) as usize;
     vec![0.0; n]
 }

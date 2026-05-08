@@ -68,7 +68,9 @@ impl Default for TonismPlugin {
         let (audio_logger, log_drain) = log_bridge::channel(1024);
         Self {
             params: Arc::new(TonismParams::default()),
-            gain_block: Gain { db: Decibels(0.0) },
+            gain_block: Gain {
+                db: Decibels::default(),
+            },
             phase: 0.0,
             sample_rate: DEFAULT_SAMPLE_RATE,
             xrun_counter: XrunCounter::default(),
@@ -126,7 +128,7 @@ impl Plugin for TonismPlugin {
         // Reset the gain block for the new sample rate (no-op for static gain,
         // but establishes the pattern for stateful blocks in v0.2).
         self.gain_block
-            .reset(SampleRate(buffer_config.sample_rate as u32));
+            .reset(SampleRate::new(buffer_config.sample_rate));
         true
     }
 
@@ -171,7 +173,7 @@ impl Plugin for TonismPlugin {
         // Stage 1: optionally replace input with the 440 Hz sine, then apply input_gain.
         // Smoother::next() advances one step per frame; phase advances once per frame.
         for channel_samples in buffer.iter_samples() {
-            let in_gain: GainLinear = Decibels(self.params.input_gain.smoothed.next()).into();
+            let in_gain: GainLinear = Decibels::new(self.params.input_gain.smoothed.next()).into();
             let sine = self.phase.sin();
             self.phase = (self.phase + phase_inc) % TAU;
             for sample in channel_samples {
@@ -180,7 +182,7 @@ impl Plugin for TonismPlugin {
                     // Phase 4 ships the toggle; latency-measurement algorithm is dev work.
                     *sample = sine;
                 }
-                *sample *= in_gain.0;
+                *sample *= in_gain.value();
             }
         }
 
@@ -192,9 +194,10 @@ impl Plugin for TonismPlugin {
 
         // Stage 3: apply output_gain.  Smoother advances one step per frame.
         for channel_samples in buffer.iter_samples() {
-            let out_gain: GainLinear = Decibels(self.params.output_gain.smoothed.next()).into();
+            let out_gain: GainLinear =
+                Decibels::new(self.params.output_gain.smoothed.next()).into();
             for sample in channel_samples {
-                *sample *= out_gain.0;
+                *sample *= out_gain.value();
             }
         }
 

@@ -15,7 +15,7 @@ The domain is the [Signal chain](../specs/product-architecture.md#product-layers
 | C2 | **Law of Demeter.** No `chain.blocks[0].param.value` reaches across layers. | |
 | C3 | **Immutability by default.** Mutate only where the realtime path demands it; clearly mark those types. | The audio thread will mutate per-buffer scratch state; everything else is `&self`. |
 | C4 | Composition over inheritance — Rust traits + concrete types, no shared-state via inheritance pattern (we don't have that anyway). | |
-| C5 | **Value objects** for domain primitives. NewType wrappers for `SampleRate`, `BufferSize`, `BlockId`, `ParamId`, `Decibels`, `Hertz` — never raw `f32`/`u32`/`String`. | The type system rules out swapping a sample rate with a buffer size. |
+| C5 | **Value objects** for domain primitives. NewType wrappers for `SampleRate`, `BufferSize`, `BlockId`, `ParamId`, `Decibels`, `Hertz` — never raw `f32`/`u32`/`String`. | The type system rules out swapping a sample rate with a buffer size. **Field visibility convention**: NewType inner fields are private. Each NewType exposes a `pub const fn new(value: T) -> Self` constructor and a `pub fn value(self) -> T` accessor (or a semantic accessor name where appropriate, e.g. `fn hz()` for `SampleRate`). Direct `.0` field access in call sites is forbidden. This shape lets the NewType add validation in `new()` later without breaking callers, and makes call sites self-documenting (`gain.value()` reads better than `gain.0`). |
 | C6 | **Fail fast at boundaries.** Validate external input (preset files, MIDI, plugin host parameters) once in the adapter; the core trusts what it receives. | |
 
 ### Errors

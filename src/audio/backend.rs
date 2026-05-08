@@ -68,8 +68,10 @@ mod tests {
     fn buffer_backend_runs_gain_block_through_input_in_chunks() {
         let input = vec![0.5_f32; 1024];
         let mut backend = BufferBackend::new(input.clone(), 128);
-        let mut gain = Gain { db: Decibels(0.0) };
-        backend.run(&mut gain, SampleRate(48_000));
+        let mut gain = Gain {
+            db: Decibels::new(0.0),
+        };
+        backend.run(&mut gain, SampleRate::new(48_000.0));
         let out = backend.into_output();
         assert_eq!(out.len(), input.len());
         for (got, expected) in out.iter().zip(input.iter()) {

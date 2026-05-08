@@ -7,6 +7,14 @@ edition = "2021"
 name = "tonism"
 path = "src/main.rs"
 
+# Opt-in profiling features.  See README.md "Profiling" for the recommended
+# invocations.  Keep these OFF in release builds — the assertion has overhead.
+[features]
+# Panics on any heap allocation reached from the audio callback.  Enforces A2
+# (architecture standard) and J1 (zero allocations per buffer).  Use during
+# development with `cargo run --features debug-assert-no-alloc`.
+debug-assert-no-alloc = ["nih_plug/assert_process_allocs"]
+
 [dependencies]
 nih_plug = { git = "https://github.com/BillyDM/nih-plug", features = ["standalone"] }
 vizia_plug = { git = "https://github.com/vizia/vizia-plug" }

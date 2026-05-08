@@ -30,30 +30,21 @@ pub enum AudioLogEvent {
 
 /// Write end of the audio→log channel.  Handed to the audio thread.
 ///
-/// Wraps an `rtrb::Producer` in a way that makes `log` safe to call as `&self`
-/// from the audio thread.  The `UnsafeCell` is sound because only one thread
-/// (the audio thread) ever calls `log()`.
+/// `log` takes `&mut self`; callers reach it through `Plugin::process`'s
+/// `&mut self`, so the borrow checker enforces single-writer access statically.
+/// No `UnsafeCell` or manual `unsafe impl Send` is needed.
 pub struct AudioLogger {
-    // SAFETY: only ever accessed from the single audio thread.
-    producer: std::cell::UnsafeCell<rtrb::Producer<AudioLogEvent>>,
+    producer: rtrb::Producer<AudioLogEvent>,
     dropped: Arc<AtomicU64>,
 }
-
-// SAFETY: only the audio thread holds the producer; `rtrb::Producer<T>: Send`
-// when `T: Send`, and `UnsafeCell<T>: Send` when `T: Send`, so this impl is a
-// no-op assertion that the type system already permits — but UnsafeCell makes
-// auto-Send opaque, hence the explicit impl.
-unsafe impl Send for AudioLogger {}
 
 impl AudioLogger {
     /// Push an event to the drain thread.  Non-blocking; if the ring buffer is
     /// full the event is counted in `dropped` and silently discarded.
     ///
     /// A2-safe: one non-blocking ring-buffer push; no alloc, no lock, no syscall.
-    pub fn log(&self, event: AudioLogEvent) {
-        // SAFETY: only the audio thread calls this.
-        let producer = unsafe { &mut *self.producer.get() };
-        if producer.push(event).is_err() {
+    pub fn log(&mut self, event: AudioLogEvent) {
+        if self.producer.push(event).is_err() {
             self.dropped.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -131,10 +122,7 @@ pub fn channel(capacity: usize) -> (AudioLogger, LogDrainHandle) {
         })
         .expect("failed to spawn log drain thread");
 
-    let logger = AudioLogger {
-        producer: std::cell::UnsafeCell::new(producer),
-        dropped,
-    };
+    let logger = AudioLogger { producer, dropped };
 
     let handle = LogDrainHandle {
         stop,
@@ -150,7 +138,7 @@ mod tests {
 
     #[test]
     fn drain_thread_exits_cleanly_after_one_xrun() {
-        let (logger, handle) = channel(64);
+        let (mut logger, handle) = channel(64);
 
         // Push one Xrun from the test thread (simulates audio thread usage).
         logger.log(AudioLogEvent::Xrun);

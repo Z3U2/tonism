@@ -15,6 +15,14 @@ use super::log_bridge::{self, AudioLogger, LogDrainHandle};
 use super::params::TonismParams;
 use super::xrun::XrunCounter;
 
+/// Pre-`initialize()` placeholder sample rate. Always overwritten in
+/// `Plugin::initialize()` before any `process()` call (nih-plug calls
+/// `initialize` once before processing starts), so this value never
+/// reaches the audio path. Pinned at 44.1 kHz purely as a defensive
+/// default for the f32 phase-increment math during the brief window
+/// between `Default::default()` and `initialize()`.
+const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
+
 /// The Tonism audio plugin struct.
 pub struct TonismPlugin {
     params: Arc<TonismParams>,
@@ -62,7 +70,7 @@ impl Default for TonismPlugin {
             params: Arc::new(TonismParams::default()),
             gain_block: Gain { db: Decibels(0.0) },
             phase: 0.0,
-            sample_rate: 44_100.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             xrun_counter: XrunCounter::default(),
             audio_logger,
             log_drain,

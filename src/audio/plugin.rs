@@ -33,19 +33,26 @@ pub struct TonismPlugin {
     /// Pre-cloned before processing starts to keep `process()` alloc-free.
     xrun_counter: XrunCounter,
 
-    // DROP-ORDER INVARIANT: audio_logger MUST be declared before _log_drain.
+    // DROP-ORDER INVARIANT: audio_logger MUST be declared before log_drain.
     // Rust drops struct fields in declaration order.  LogDrainHandle::drop
     // joins the drain thread, which exits only after Consumer::is_abandoned()
     // returns true — which only happens after the Producer (inside AudioLogger)
-    // is dropped.  If _log_drain dropped first, join() would block forever.
+    // is dropped.  If log_drain dropped first, join() would block forever.
     /// Write end of the audio→log bridge.  Only the audio thread calls `log()`.
     /// Currently unused because xrun events are not observable from Plugin::process
     /// in the cpal standalone backend (Phase 4 stop condition).  Kept for v0.2.
+    /// See PR #1 thread T11 and docs/specs/tech-quality/audio-thread-token-pattern.md.
     #[allow(dead_code)]
-    audio_logger: Option<AudioLogger>,
+    audio_logger: AudioLogger,
 
-    /// Keeps the drain thread alive.  Dropped when the plugin is destroyed.
-    _log_drain: Option<LogDrainHandle>,
+    /// Holds the audio→log drain thread's join handle.  Drop semantics
+    /// are load-bearing: when this field drops, its `Drop` impl joins
+    /// the drain thread.  Removing this field (or dropping it without
+    /// joining) leaks the drain thread on plugin unload, which is UB
+    /// in plugin contexts (the thread would reference unloaded library
+    /// code after `dlclose`).  See PR #1 thread T14.
+    #[allow(dead_code)]
+    log_drain: LogDrainHandle,
 }
 
 impl Default for TonismPlugin {
@@ -57,8 +64,8 @@ impl Default for TonismPlugin {
             phase: 0.0,
             sample_rate: 44_100.0,
             xrun_counter: XrunCounter::default(),
-            audio_logger: Some(audio_logger),
-            _log_drain: Some(log_drain),
+            audio_logger,
+            log_drain,
         }
     }
 }

@@ -33,6 +33,11 @@ pub struct TonismPlugin {
     /// Pre-cloned before processing starts to keep `process()` alloc-free.
     xrun_counter: XrunCounter,
 
+    // DROP-ORDER INVARIANT: audio_logger MUST be declared before _log_drain.
+    // Rust drops struct fields in declaration order.  LogDrainHandle::drop
+    // joins the drain thread, which exits only after Consumer::is_abandoned()
+    // returns true — which only happens after the Producer (inside AudioLogger)
+    // is dropped.  If _log_drain dropped first, join() would block forever.
     /// Write end of the audio→log bridge.  Only the audio thread calls `log()`.
     /// Currently unused because xrun events are not observable from Plugin::process
     /// in the cpal standalone backend (Phase 4 stop condition).  Kept for v0.2.

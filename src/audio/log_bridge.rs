@@ -14,7 +14,7 @@
 //! ```
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 use std::time::Duration;
 
@@ -50,19 +50,34 @@ impl AudioLogger {
     }
 }
 
-/// Handle to the drain thread.  Dropping this signals the thread to exit and
-/// joins it.
+/// Handle to the drain thread.  Dropping this joins the thread.
+///
+/// Drop semantics rely on `AudioLogger` (the producer side) being dropped
+/// before this handle.  When the producer drops, `Consumer::is_abandoned()`
+/// returns `true`, and the drain loop exits after a final pass.  If this
+/// handle were dropped first, `join()` would block forever waiting on a thread
+/// that never sees `is_abandoned()` become true.  See the field-order comment
+/// in `TonismPlugin`.
 pub struct LogDrainHandle {
-    stop: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
 }
 
 impl Drop for LogDrainHandle {
     fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
+        // The producer (AudioLogger) has already been dropped — Rust drops
+        // struct fields in declaration order, and audio_logger is declared
+        // before log_drain in TonismPlugin.  The drain thread will see
+        // is_abandoned() == true and exit on its own; we just join it.
         if let Some(handle) = self.thread.take() {
-            // Best-effort join; if the thread panicked just move on.
             let _ = handle.join();
+        }
+    }
+}
+
+fn forward_event(event: AudioLogEvent) {
+    match event {
+        AudioLogEvent::Xrun => {
+            tracing::warn!(target: "tonism::audio", "audio xrun detected");
         }
     }
 }
@@ -72,27 +87,21 @@ impl Drop for LogDrainHandle {
 ///
 /// Spawns a drain thread that pulls events off the consumer and forwards each
 /// one to `tracing`.  The drain thread sleeps for 10 ms when the queue is
-/// empty.
+/// empty, and exits cleanly when the producer is dropped (detected via
+/// `Consumer::is_abandoned()`).
 pub fn channel(capacity: usize) -> (AudioLogger, LogDrainHandle) {
     let (producer, mut consumer) = rtrb::RingBuffer::new(capacity);
     let dropped = Arc::new(AtomicU64::new(0));
-    let stop = Arc::new(AtomicBool::new(false));
 
     let dropped_clone = Arc::clone(&dropped);
-    let stop_clone = Arc::clone(&stop);
 
     let thread = thread::Builder::new()
         .name("tonism-log-drain".into())
         .spawn(move || {
-            while !stop_clone.load(Ordering::Relaxed) {
-                // Drain all queued events.
+            loop {
                 let mut drained = 0usize;
                 while let Ok(event) = consumer.pop() {
-                    match event {
-                        AudioLogEvent::Xrun => {
-                            tracing::warn!(target: "tonism::audio", "audio xrun detected");
-                        }
-                    }
+                    forward_event(event);
                     drained += 1;
                 }
 
@@ -106,26 +115,27 @@ pub fn channel(capacity: usize) -> (AudioLogger, LogDrainHandle) {
                     );
                 }
 
+                // Exit when producer is dropped AND queue is fully drained.
+                // is_abandoned() returns true after the producer drops; pop()
+                // continues to return any remaining items before returning Empty.
+                if consumer.is_abandoned() {
+                    // Final drain: items pushed just before the producer dropped
+                    // may still be in the queue.
+                    while let Ok(event) = consumer.pop() {
+                        forward_event(event);
+                    }
+                    break;
+                }
+
                 if drained == 0 {
                     thread::sleep(Duration::from_millis(10));
-                }
-            }
-
-            // Final drain before exit.
-            while let Ok(event) = consumer.pop() {
-                match event {
-                    AudioLogEvent::Xrun => {
-                        tracing::warn!(target: "tonism::audio", "audio xrun detected");
-                    }
                 }
             }
         })
         .expect("failed to spawn log drain thread");
 
     let logger = AudioLogger { producer, dropped };
-
     let handle = LogDrainHandle {
-        stop,
         thread: Some(thread),
     };
 
@@ -143,7 +153,9 @@ mod tests {
         // Push one Xrun from the test thread (simulates audio thread usage).
         logger.log(AudioLogEvent::Xrun);
 
-        // Drop the handle — signals the drain thread to exit and joins it.
+        // Drop logger first — its producer drop signals is_abandoned() to the
+        // drain thread.  Then drop the handle, which joins the thread.
+        drop(logger);
         drop(handle);
 
         // If we reach here without hanging the thread exited cleanly.

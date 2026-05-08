@@ -35,7 +35,7 @@ pub enum AudioLogEvent {
 /// No `UnsafeCell` or manual `unsafe impl Send` is needed.
 pub struct AudioLogger {
     producer: rtrb::Producer<AudioLogEvent>,
-    dropped: Arc<AtomicU64>,
+    dropped_event_count: Arc<AtomicU64>,
 }
 
 impl AudioLogger {
@@ -45,7 +45,7 @@ impl AudioLogger {
     /// A2-safe: one non-blocking ring-buffer push; no alloc, no lock, no syscall.
     pub fn log(&mut self, event: AudioLogEvent) {
         if self.producer.push(event).is_err() {
-            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.dropped_event_count.fetch_add(1, Ordering::Relaxed);
         }
     }
 }
@@ -91,9 +91,9 @@ fn forward_event(event: AudioLogEvent) {
 /// `Consumer::is_abandoned()`).
 pub fn channel(capacity: usize) -> (AudioLogger, LogDrainHandle) {
     let (producer, mut consumer) = rtrb::RingBuffer::new(capacity);
-    let dropped = Arc::new(AtomicU64::new(0));
+    let dropped_event_count = Arc::new(AtomicU64::new(0));
 
-    let dropped_clone = Arc::clone(&dropped);
+    let dropped_clone = Arc::clone(&dropped_event_count);
 
     let thread = thread::Builder::new()
         .name("tonism-log-drain".into())
@@ -134,7 +134,10 @@ pub fn channel(capacity: usize) -> (AudioLogger, LogDrainHandle) {
         })
         .expect("failed to spawn log drain thread");
 
-    let logger = AudioLogger { producer, dropped };
+    let logger = AudioLogger {
+        producer,
+        dropped_event_count,
+    };
     let handle = LogDrainHandle {
         thread: Some(thread),
     };

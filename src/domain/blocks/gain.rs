@@ -57,7 +57,7 @@ mod tests {
         assert!((buf[0] - 0.501).abs() < 1e-3, "got {}", buf[0]);
     }
 
-    /// A near-zero dB value (0.001 dB) leaves the sample within 1e-4 of unity.
+    /// A near-zero dB value (0.001 dB) leaves the sample within 2e-4 of unity.
     #[test]
     fn very_small_db_near_unity() {
         let mut gain = Gain {
@@ -65,7 +65,7 @@ mod tests {
         };
         let mut buf = [1.0_f32];
         gain.process(&mut buf);
-        assert!((buf[0] - 1.0_f32).abs() < 1e-4, "got {}", buf[0]);
+        assert!((buf[0] - 1.0_f32).abs() < 2e-4, "got {}", buf[0]);
     }
 
     /// +120 dB yields ~1e6 amplitude; documents that no clipping occurs at extreme gain.

@@ -1680,6 +1680,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "650eef8c711430f1a879fdd01d4745a7deea475becfb90269c06775983bbf086"
 
 [[package]]
+name = "nih_assert_no_alloc"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b509d1e0837a73760984ed79ab51d58acd82555d1a31cb92e9b94e444889bae6"
+dependencies = [
+ "backtrace",
+ "log",
+]
+
+[[package]]
 name = "nih_log"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1713,6 +1723,7 @@ dependencies = [
  "libc",
  "log",
  "midir",
+ "nih_assert_no_alloc",
  "nih_log",
  "nih_plug_core",
  "nih_plug_derive",

@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::fixtures::{kronecker_impulse, BUFFER_SIZES, SAMPLE_RATES};
+use common::fixtures::{BUFFER_SIZES, SAMPLE_RATES, kronecker_impulse};
 use tonism::audio::backend::{AudioBackend, BufferBackend};
 use tonism::domain::blocks::gain::Gain;
 use tonism::domain::types::{Decibels, SampleRate};

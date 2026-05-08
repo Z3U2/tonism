@@ -1,11 +1,11 @@
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use nih_plug::prelude::Editor;
 use vizia_plug::vizia::prelude::*;
 use vizia_plug::widgets::*;
-use vizia_plug::{create_vizia_editor, ViziaState, ViziaTheming};
+use vizia_plug::{ViziaState, ViziaTheming, create_vizia_editor};
 
 use crate::audio::params::TonismParams;
 use crate::audio::xrun::XrunCounter;

@@ -13,6 +13,10 @@ use crate::domain::types::SampleRate;
 pub trait AudioBackend {
     /// Run the backend until input is exhausted or the implementation decides
     /// to stop.  Blocking call; returns when processing is complete.
+    ///
+    /// Implementations must call `processor.prepare(...)` then
+    /// `processor.reset()` before any `process()` call, mirroring nih-plug's
+    /// `initialize → reset → process` lifecycle.
     fn run(&mut self, processor: &mut dyn Process, sample_rate: SampleRate);
 }
 
@@ -49,7 +53,8 @@ impl BufferBackend {
 
 impl AudioBackend for BufferBackend {
     fn run(&mut self, processor: &mut dyn Process, sample_rate: SampleRate) {
-        processor.reset(sample_rate);
+        processor.prepare(sample_rate, self.buffer_size);
+        processor.reset();
         for chunk in self.input.chunks(self.buffer_size) {
             let mut work = chunk.to_vec();
             processor.process(&mut work);

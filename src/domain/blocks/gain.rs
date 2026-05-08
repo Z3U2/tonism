@@ -1,5 +1,5 @@
 use crate::domain::process::Process;
-use crate::domain::types::{Decibels, GainLinear, SampleRate};
+use crate::domain::types::{Decibels, GainLinear};
 
 /// A simple gain block that scales every sample by a fixed dB value.
 ///
@@ -16,9 +16,6 @@ impl Process for Gain {
             *s *= gain_linear.value();
         }
     }
-
-    /// No state to reset for a static gain block.
-    fn reset(&mut self, _sr: SampleRate) {}
 }
 
 #[cfg(test)]

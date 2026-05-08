@@ -116,8 +116,8 @@ impl Plugin for TonismPlugin {
         crate::gui::editor::create(self.params.clone(), self.xrun_counter.clone())
     }
 
-    /// Called once before processing begins.  Record the sample rate so the
-    /// test-signal generator can compute the correct phase increment.
+    /// Called once before processing begins.  Record the sample rate and
+    /// configure the domain chain for the new session.
     fn initialize(
         &mut self,
         _audio_io_layout: &AudioIOLayout,
@@ -125,11 +125,19 @@ impl Plugin for TonismPlugin {
         _context: &mut impl InitContext<Self>,
     ) -> bool {
         self.sample_rate = buffer_config.sample_rate;
-        // Reset the gain block for the new sample rate (no-op for static gain,
-        // but establishes the pattern for stateful blocks in v0.2).
-        self.gain_block
-            .reset(SampleRate::new(buffer_config.sample_rate));
+        // Configure the gain block for the new session (no-op for static gain,
+        // but establishes the prepare→reset→process pattern for stateful blocks).
+        self.gain_block.prepare(
+            SampleRate::new(buffer_config.sample_rate),
+            buffer_config.max_buffer_size as usize,
+        );
         true
+    }
+
+    /// Called by the host on transport-restart, sample-rate change, etc.
+    /// Forwards to the chain's reset() so stateful blocks can clear state.
+    fn reset(&mut self) {
+        self.gain_block.reset();
     }
 
     /// Process one block of audio.

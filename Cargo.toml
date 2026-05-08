@@ -1,0 +1,34 @@
+[package]
+name = "tonism"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "tonism"
+path = "src/main.rs"
+
+# Opt-in profiling features.  See README.md "Profiling" for the recommended
+# invocations.  Keep these OFF in release builds — the assertion has overhead.
+[features]
+# Panics on any heap allocation reached from the audio callback.  Enforces A2
+# (architecture standard) and J1 (zero allocations per buffer).  Use during
+# development with `cargo run --features debug-assert-no-alloc`.
+debug-assert-no-alloc = ["nih_plug/assert_process_allocs"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/BillyDM/nih-plug", features = ["standalone"] }
+vizia_plug = { git = "https://github.com/vizia/vizia-plug" }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+thiserror = "2"
+anyhow = "1"
+# rtrb is already a transitive dep via nih-plug; pinned here so the audio
+# log bridge can reference it directly without going through nih-plug internals.
+rtrb = "0.3"
+
+# Patch: temporarily route nih_plug through our fork to pick up the macOS/Windows
+# vst3 import fix. Drop this once https://github.com/BillyDM/nih-plug/pull/<TBD>
+# is merged. See ADR-002 / ADR-003 for context.
+[patch."https://github.com/BillyDM/nih-plug"]
+nih_plug = { git = "https://github.com/Z3U2/nih-plug", branch = "fix-macos-windows-vst3-import" }

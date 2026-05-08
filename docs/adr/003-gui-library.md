@@ -82,3 +82,40 @@ fork) and accepted at the same risk tier as ADR-002.
 point at [`BillyDM/nih-plug`](https://github.com/BillyDM/nih-plug) as the
 maintained fork — the original is no longer maintained
 ([issue #265](https://github.com/robbert-vdh/nih-plug/issues/265)).
+
+## Update — 2026-05-07
+
+The macOS/Windows compile bug discovered during MVP scaffolding (Phase 2 of
+the project plan) forced
+verification of this ADR's "two maintained adapters" claim. Live inspection of
+[`BillyDM/nih-plug/tree/master/crates`](https://github.com/BillyDM/nih-plug/tree/master/crates)
+shows the fork ships `nih_plug_core`, `nih_plug_derive`, `nih_plug_egui`, and
+`nih_plug_iced` — but **not** `nih_plug_vizia`. Vizia was dropped from the fork
+during the recent `nih_plug_core` split.
+
+Only [`vizia/vizia-plug`](https://github.com/vizia/vizia-plug) remains as a
+maintained vizia-based nih-plug adapter. The crate is named `vizia_plug`
+(snake_case), not `nih_plug_vizia`. Tonism's [`Cargo.toml`](../../Cargo.toml)
+uses `vizia_plug = { git = "https://github.com/vizia/vizia-plug" }` plus a
+[`[patch]`](../../Cargo.toml) routing `nih_plug` through a personal fork
+([`Z3U2/nih-plug`](https://github.com/Z3U2/nih-plug) branch
+`fix-macos-windows-vst3-import`) until the upstream macOS/Windows fix lands.
+
+**Effect on the matrix:** the "Solo-dev sustainability" cell for `nih_plug_vizia`
+above (🟠🟠) was predicated on two maintained adapters. With BillyDM's vizia
+adapter gone, the realistic score is **🟠** (single maintained adapter from the
+vizia org).
+
+**Effect on the recommendation:** **stands.** The other two candidates are still
+worse:
+
+- `nih_plug_iced` is pinned to iced 0.4 while upstream iced is at 0.14, and
+  `iced_audio` has had no release since 2020 — non-viable.
+- `nih_plug_egui` carries the framework maintainer's explicit nudge against it
+  for plugin UIs and the immediate-mode-in-DAW-host repaint cost flagged in
+  the matrix.
+
+`vizia/vizia-plug` is actively maintained (last push 2026-04-30). The
+recommendation to adopt a vizia-based adapter therefore holds; the **source**
+was always `vizia/vizia-plug` (per the original Recommendation line above) —
+this update merely retires the now-unavailable BillyDM in-tree backup.

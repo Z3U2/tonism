@@ -41,36 +41,38 @@ pub fn create(params: Arc<TonismParams>, xrun_counter: XrunCounter) -> Option<Bo
             ctx.set_visuals(Visuals::dark());
         },
         move |ui, setter, _queue, _state| {
-            ui.label("Input Gain");
-            ui.add(widgets::ParamSlider::for_param(&params.input_gain, setter));
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                ui.label("Input Gain");
+                ui.add(widgets::ParamSlider::for_param(&params.input_gain, setter));
 
-            ui.label("Output Gain");
-            ui.add(widgets::ParamSlider::for_param(&params.output_gain, setter));
+                ui.label("Output Gain");
+                ui.add(widgets::ParamSlider::for_param(&params.output_gain, setter));
 
-            // BoolParam: use a standard checkbox and drive the setter manually.
-            let mut bypass = params.bypass.value();
-            if ui.checkbox(&mut bypass, "Bypass").changed() {
-                setter.begin_set_parameter(&params.bypass);
-                setter.set_parameter(&params.bypass, bypass);
-                setter.end_set_parameter(&params.bypass);
-            }
+                // BoolParam: use a standard checkbox and drive the setter manually.
+                let mut bypass = params.bypass.value();
+                if ui.checkbox(&mut bypass, "Bypass").changed() {
+                    setter.begin_set_parameter(&params.bypass);
+                    setter.set_parameter(&params.bypass, bypass);
+                    setter.end_set_parameter(&params.bypass);
+                }
 
-            let mut test_signal = params.test_signal.value();
-            if ui.checkbox(&mut test_signal, "Test Signal").changed() {
-                setter.begin_set_parameter(&params.test_signal);
-                setter.set_parameter(&params.test_signal, test_signal);
-                setter.end_set_parameter(&params.test_signal);
-            }
+                let mut test_signal = params.test_signal.value();
+                if ui.checkbox(&mut test_signal, "Test Signal").changed() {
+                    setter.begin_set_parameter(&params.test_signal);
+                    setter.set_parameter(&params.test_signal, test_signal);
+                    setter.end_set_parameter(&params.test_signal);
+                }
 
-            // Live xrun counter — reads the atomic each frame.
-            ui.label(format!("xrun: {}", xrun_counter.0.load(Ordering::Relaxed)));
+                // Live xrun counter — reads the atomic each frame.
+                ui.label(format!("xrun: {}", xrun_counter.0.load(Ordering::Relaxed)));
 
-            // Latency label: static placeholder — algorithm is dev work post-Phase 4.
-            ui.label("latency: -- ms");
+                // Latency label: static placeholder — algorithm is dev work post-Phase 4.
+                ui.label("latency: -- ms");
 
-            // Repaint at ~60 Hz so the xrun counter keeps polling.
-            // request_repaint_after avoids busy-spinning that request_repaint() would cause.
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
+                // Repaint at ~60 Hz so the xrun counter keeps polling.
+                // request_repaint_after avoids busy-spinning that request_repaint() would cause.
+                ui.ctx().request_repaint_after(Duration::from_millis(16));
+            });
         },
     )
 }

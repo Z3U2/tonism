@@ -33,7 +33,6 @@ The codebase follows **hexagonal architecture** (Alistair Cockburn) with a **fun
 These are referenced as `TBD` throughout this file and will become ADRs as they're resolved:
 
 - Plugin framework (nih-plug is the leading candidate per [ADR-001](../adr/001-language-choice.md), not yet committed).
-- GUI framework (VIZIA / egui / iced).
 - Crate / workspace layout.
 - Composition-root location.
 - The exact lock-free primitive for GUI ↔ audio messaging.

@@ -203,27 +203,40 @@ impl LatencyMeter {
 
 ### 4.3 Control surface — GUI / MIDI
 
+> **⚠ Stale — rewrite before starting mvp-02.** This section was written
+> against vizia idioms (`SyncSignal`, `Timer`, `Memo`, `Button::on_press`).
+> The GUI library was reversed in [ADR-004](../../../adr/004-gui-library-egui.md):
+> Tonism now ships on `nih_plug_egui`. The egui per-frame model removes the
+> Timer/Signal/Memo scaffolding entirely — every read-only state display
+> (xrun counter, latency readout) becomes a one-line atomic read inside the
+> update closure with `ctx.request_repaint_after(16ms)` driving the cadence.
+> The acceptance criteria, the audio-side state machine (sections 4.1–4.2),
+> the integration tests (5.2), and the unit tests (5.3) are GUI-agnostic and
+> unchanged. Only the structure below is stale. Rewrite Section 4.3 against
+> the current [`src/gui/editor.rs`](../../../../src/gui/editor.rs) as the
+> first step of mvp-02 implementation.
+
 ```diff
 src/gui/editor.rs
-├── 🟡 🪟 create()                                                                          src/gui/editor.rs:45–91
+├── 🟡 🪟 create()                                                                          src/gui/editor.rs:38–73 (current)
 +      Add `latency_handle: LatencyHandle` parameter alongside `xrun_counter`. Replace static
-+      "latency: -- ms" Label (line 88) with:
-+      - A `Button` labeled "Measure latency" wired to `latency_handle.request_measurement()`.
-+      - A live Label driven by Memo<LatencyDisplay> updated by the existing 16 ms Timer
-+        (the Timer that polls XrunCounter — extend its body to also poll the LatencyHandle).
++      "latency: -- ms" label with:
++      - A "Measure latency" button wired to `latency_handle.request_measurement()`.
++      - A live label that reads `latency_handle.state()` each frame and renders the
++        appropriate `LatencyDisplay` variant.
 │   ├── 🟢 🎛️ measure_button                                                                src/gui/editor.rs
-+          Button::new(...).on_press(move |_cx| { latency_handle.request_measurement(); })
-+          Press → audio thread reads arm_request next buffer and arms the meter.
-│   ├── 🟢 🪝 latency_signal: SyncSignal<LatencyDisplay>                                     src/gui/editor.rs
-+          Updated by the existing 60 Hz Timer.
-+          Body extension: read latency_handle.state(); on transition to Done, call
-+          `latency_handle.read_capture_into(&mut local_buf)` (capacity-checked Vec built
-+          once outside the closure scope), call `domain::latency::measure_latency(
-+          &KRONECKER_REF, &local_buf, sample_rate)`, map Result→LatencyDisplay, set the
-+          signal, call `latency_handle.reset_to_idle()`.
++          if ui.button("Measure latency").clicked() { latency_handle.request_measurement(); }
++          Click → audio thread reads arm_request next buffer and arms the meter.
+│   ├── 🟢 🪝 latency_display: per-frame derivation                                          src/gui/editor.rs
++          Each frame: read latency_handle.state(); on Done, call
++          `latency_handle.read_capture_into(&mut local_buf)` (Vec held in editor's
++          user_state — switch the typed user_state slot of create_egui_editor from () to a
++          small struct), call `domain::latency::measure_latency(
++          &KRONECKER_REF, &local_buf, sample_rate)`, map Result→LatencyDisplay, store in
++          user_state, call `latency_handle.reset_to_idle()`.
 │   └── 🟢 🌍 LatencyDisplay → format string                                                 src/gui/editor.rs
-+          Memo formats per D3.
-└── ⚪ 🚇 ParamSlider, VStack, Label, Button                                                  (vizia_plug widgets)
++          Inline format per D3 each frame from the stored LatencyDisplay.
+└── ⚪ 🚇 widgets::ParamSlider, ui.label, ui.button, ui.checkbox                              (nih_plug_egui + egui)
 +      Reused.
 ```
 
@@ -343,9 +356,9 @@ This integration test is what Option O buys over Option A: `LatencyMeter` is a `
 ## 7. Risks and open questions
 
 - 🟢 **D1 (architecture) and D2 (synchronisation primitive) resolved** — see "Decisions taken" above.
-- 🟡 **One-shot button ergonomics in vizia 0.4.0** — the `Button.on_press` closure is verified to fire on the GUI thread; the closure needs to capture the `LatencyHandle` (an `Arc` clone, cheap). Verify in code that `vizia_plug`'s `Button::new` accepts `move |cx| { ... }` closures with captured `Arc`s. If not, fall back to a vizia `Element` with a custom `on_press` event.
+- 🟢 **One-shot button ergonomics in egui** — `ui.button("...").clicked()` returns once on the release frame; the per-frame closure captures the `LatencyHandle` (`Arc` clone, cheap). No special handling required. (This row originally flagged a vizia-specific risk that disappeared with [ADR-004](../../../adr/004-gui-library-egui.md).)
 - 🟡 **Loopback signal level** — the threshold in `measure_latency` rejects very quiet captures. If the dev interface has high attenuation between output and input, the silent-input sentinel may fire even with a real cable. Tune the threshold or boost output gain in the protocol.
-- 🟢 **Existing scaffold pays off** — `XrunCounter`/`SyncSignal`/`Memo`/`ParamSlider` give a complete template for atomic state + 60 Hz GUI poll + reactive readout; `Gain` gives the `Process`-block + `BufferBackend` test pattern; the `rtrb` log bridge gives a precedent for shared-Arc audio-side state. mvp-02 reuses every one.
+- 🟢 **Existing scaffold pays off** — the `XrunCounter` per-frame `Relaxed` load inside the egui update closure (with `ctx.request_repaint_after(16ms)` driving cadence) is the template for the latency display too; `nih_plug_egui::widgets::ParamSlider::for_param(...)` is the slider pattern; `Gain` gives the `Process`-block + `BufferBackend` test pattern; the `rtrb` log bridge gives a precedent for shared-Arc audio-side state. mvp-02 reuses every one.
 - 🟢 **Block pattern pays back v0.2** — `LatencyMeter` is the second `Process` block in the codebase (after `Gain`). v0.2's multi-block chain inherits the integration-test pattern (`BufferBackend` driving any `Process` impl) and the GUI-shared-Arc pattern (block holds `Arc<Atomic*>`, exposes a handle to the editor).
 
 ---
@@ -354,5 +367,5 @@ This integration test is what Option O buys over Option A: `LatencyMeter` is a `
 
 - Similar implementations to follow: `XrunCounter` atomic + GUI poll ([xrun.rs](../../../../src/audio/xrun.rs) + [editor.rs:49–85](../../../../src/gui/editor.rs)); `audio_logger` rtrb pattern ([log_bridge.rs](../../../../src/audio/log_bridge.rs)); `Gain` block + `BufferBackend` integration test ([smoke.rs](../../../../tests/smoke.rs)); existing per-frame `process` body in [plugin.rs:166–213](../../../../src/audio/plugin.rs).
 - Directly applicable standards: [architecture.md](../../../standards/architecture.md) (A1, A2, A3, A4, A6, F4), [domain.md](../../../standards/domain.md) (E4), [testing.md](../../../standards/testing.md) (G3, G4, G5), [infrastructure.md](../../../standards/infrastructure.md) (J2 — handled by mvp-03 for the audio→log bridge).
-- Related ADRs: [ADR-002](../../../adr/002-standalone-runner.md), [ADR-003](../../../adr/003-gui-library.md).
+- Related ADRs: [ADR-002](../../../adr/002-standalone-runner.md), [ADR-004](../../../adr/004-gui-library-egui.md) (supersedes [ADR-003](../../../adr/003-gui-library.md)).
 - Source spec section: [acceptance criteria AC1](../spec.md#acceptance-criteria); [dependencies — latency measurement](../dependencies.md#patterns).

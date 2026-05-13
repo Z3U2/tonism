@@ -38,7 +38,7 @@ delivers silence on the input stream.
 
 - `src/domain/` — pure DSP types and traits ([no I/O imports — rule A1](docs/standards/architecture.md))
 - `src/audio/` — nih-plug adapter, parameter set, xrun counter, audio-to-log bridge
-- `src/gui/` — vizia editor
+- `src/gui/` — egui editor (see [ADR-004](docs/adr/004-gui-library-egui.md))
 - `tests/` — integration tests (smoke + boundary fixtures)
 - `docs/` — specs, ADRs, standards
 
@@ -83,4 +83,5 @@ See [docs/adr/](docs/adr/) for the load-bearing decisions:
 
 - [ADR-001](docs/adr/001-language-choice.md) — Rust + nih-plug + cpal stack
 - [ADR-002](docs/adr/002-standalone-runner.md) — nih-plug standalone as audio entry point
-- [ADR-003](docs/adr/003-gui-library.md) — `vizia_plug` via `vizia/vizia-plug`
+- [ADR-003](docs/adr/003-gui-library.md) — _superseded by ADR-004_
+- [ADR-004](docs/adr/004-gui-library-egui.md) — `nih_plug_egui` from BillyDM's fork

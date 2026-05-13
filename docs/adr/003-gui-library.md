@@ -2,7 +2,17 @@
 
 Owner: Z3U2
 
-Last update: 07/05/2026
+Last update: 13/05/2026
+
+**Status:** Superseded by [ADR-004](004-gui-library-egui.md) (13/05/2026). The
+recommendation below — adopt `nih_plug_vizia` via `vizia/vizia-plug` — was
+reversed after live testing on `feat/experiment-with-egui` showed egui to be
+more responsive than the vizia equivalent and the vizia reactive-binding
+scaffolding to be disproportionately verbose for read-only state displays
+(xrun counter, latency readout). See [ADR-004](004-gui-library-egui.md) for
+the new decision and the implementation gotchas it surfaced. This document
+is retained as a record of the original evaluation and the inputs that were
+known at the time.
 
 ## Context
 

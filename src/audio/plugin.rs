@@ -11,6 +11,7 @@ use crate::domain::blocks::gain::Gain;
 use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
 
+use super::latency::LatencyMeter;
 use super::log_bridge::{self, AudioLogger, LogDrainHandle};
 use super::params::TonismParams;
 use super::xrun::XrunCounter;
@@ -29,6 +30,10 @@ pub struct TonismPlugin {
 
     /// Domain gain block applied in the middle of the signal path.
     gain_block: Gain,
+
+    /// Lock-free latency meter block.  Sits before `gain_block` on channel 0:
+    /// captures the inbound loopback and emits a Kronecker impulse when armed.
+    latency_meter: LatencyMeter,
 
     /// Phase accumulator for the 440 Hz test-signal sine generator.
     /// Advanced by `2π * 440 / sample_rate` each sample; wrapped with `% TAU`.
@@ -71,6 +76,7 @@ impl Default for TonismPlugin {
             gain_block: Gain {
                 db: Decibels::default(),
             },
+            latency_meter: LatencyMeter::default(),
             phase: 0.0,
             sample_rate: DEFAULT_SAMPLE_RATE,
             xrun_counter: XrunCounter::default(),
@@ -113,7 +119,11 @@ impl Plugin for TonismPlugin {
     }
 
     fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
-        crate::gui::editor::create(self.params.clone(), self.xrun_counter.clone())
+        crate::gui::editor::create(
+            self.params.clone(),
+            self.xrun_counter.clone(),
+            self.latency_meter.handle(),
+        )
     }
 
     /// Called once before processing begins.  Record the sample rate and
@@ -131,6 +141,10 @@ impl Plugin for TonismPlugin {
             SampleRate::new(buffer_config.sample_rate),
             buffer_config.max_buffer_size as usize,
         );
+        self.latency_meter.prepare(
+            SampleRate::new(buffer_config.sample_rate),
+            buffer_config.max_buffer_size as usize,
+        );
         true
     }
 
@@ -138,6 +152,7 @@ impl Plugin for TonismPlugin {
     /// Forwards to the chain's reset() so stateful blocks can clear state.
     fn reset(&mut self) {
         self.gain_block.reset();
+        self.latency_meter.reset();
     }
 
     /// Process one block of audio.
@@ -172,6 +187,9 @@ impl Plugin for TonismPlugin {
         // Hard bypass: the Buffer is already in-place (input == output),
         // so returning immediately passes the signal through unchanged.
         if self.params.bypass.value() {
+            // Cancel any in-progress measurement so the GUI receives a clean
+            // Cancelled sentinel rather than a partial / stale result.
+            self.latency_meter.cancel();
             return ProcessStatus::Normal;
         }
 
@@ -194,9 +212,14 @@ impl Plugin for TonismPlugin {
             }
         }
 
-        // Stage 2: domain Gain block (per channel slice).
+        // Stage 2: latency meter (channel 0 only) then domain Gain block (all channels).
         // `as_slice()` returns `&mut [&mut [f32]]` — one contiguous slice per channel.
-        for channel in buffer.as_slice() {
+        // The latency meter runs only on channel 0: it captures the loopback signal and,
+        // when armed, overwrites channel 0 with a single Kronecker impulse sample.
+        for (idx, channel) in buffer.as_slice().iter_mut().enumerate() {
+            if idx == 0 {
+                self.latency_meter.process(channel);
+            }
             self.gain_block.process(channel);
         }
 

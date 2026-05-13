@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use egui::Visuals;
 use nih_plug::prelude::Editor;
 use nih_plug_egui::{EguiSettings, EguiState, create_egui_editor, widgets};
 
@@ -36,7 +37,9 @@ pub fn create(params: Arc<TonismParams>, xrun_counter: XrunCounter) -> Option<Bo
         // No persistent GUI-only state needed; use () as the user state.
         (),
         EguiSettings::default(),
-        |_ctx, _queue, _state| {},
+        |ctx, _queue, _state| {
+            ctx.set_visuals(Visuals::dark());
+        },
         move |ui, setter, _queue, _state| {
             ui.label("Input Gain");
             ui.add(widgets::ParamSlider::for_param(&params.input_gain, setter));

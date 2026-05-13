@@ -18,7 +18,7 @@
 ## Dependencies
 
 - Standalone runner: **nih-plug standalone** — single path to plugin export later (alt: raw `cpal` + `winit`)
-- GUI framework: **`vizia_plug`** via `vizia/vizia-plug` — audio-specific knob/meter widgets (see [ADR-003](../../adr/003-gui-library.md)) (alt: `egui`)
+- GUI framework: **`nih_plug_egui`** from BillyDM's nih-plug fork — co-located with the chosen runner; one-line per-frame state reads instead of vizia's `SyncSignal`/`Timer`/`Memo` scaffolding (see [ADR-004](../../adr/004-gui-library-egui.md), supersedes [ADR-003](../../adr/003-gui-library.md)) (alt: `vizia_plug`)
 - Audio I/O: **`cpal`** via nih-plug — CoreAudio/JACK/WASAPI covered (alt: direct `cpal`)
 - Lock-free GUI ↔ audio primitive: **`triple_buffer`** for parameter snapshot — bounded, RT-safe (deferred for MVP — nih-plug params suffice; revisit for v0.2 multi-block snapshots) (alt: SPSC `ringbuf` of param events)
 - Logging crate: **`tracing`** + `tracing-subscriber` — standards' leading candidate (alt: `log` + `env_logger`)

@@ -210,7 +210,7 @@ Go is **not suitable** for this project. The language was designed for networked
 
 | Risk | Mitigation |
 |---|---|
-| GUI too limited for complex UI | Start with VIZIA (audio-focused widgets); fallback to webview-based UI if needed |
+| GUI too limited for complex UI | Start with `nih_plug_egui` (per [ADR-004](004-gui-library-egui.md)); fallback to webview-based UI if needed |
 | nih-plug maintainer burnout | Framework is open source (ISC); could fork. Also consider Clack as backup |
 | VST3 GPLv3 licensing constraint | Use CLAP as primary format (MIT licensed); or create custom VST3 bindings |
 | Team unfamiliarity with Rust | Budget 2–4 weeks ramp-up; leverage nih-plug examples and cookiecutter template |

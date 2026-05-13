@@ -17,7 +17,8 @@ debug-assert-no-alloc = ["nih_plug/assert_process_allocs"]
 
 [dependencies]
 nih_plug = { git = "https://github.com/BillyDM/nih-plug", features = ["standalone"] }
-vizia_plug = { git = "https://github.com/vizia/vizia-plug" }
+nih_plug_egui = { git = "https://github.com/BillyDM/nih-plug" }
+egui = { version = "0.34.1", default-features = false, features = ["default_fonts"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
@@ -27,8 +28,10 @@ anyhow = "1"
 # log bridge can reference it directly without going through nih-plug internals.
 rtrb = "0.3"
 
-# Patch: temporarily route nih_plug through our fork to pick up the macOS/Windows
-# vst3 import fix. Drop this once https://github.com/BillyDM/nih-plug/pull/<TBD>
-# is merged. See ADR-002 / ADR-003 for context.
+# Patch: temporarily route nih_plug and nih_plug_egui through our fork to pick
+# up the macOS/Windows vst3 import fix. Drop this once
+# https://github.com/BillyDM/nih-plug/pull/<TBD> is merged.
+# See ADR-002 / ADR-003 for context.
 [patch."https://github.com/BillyDM/nih-plug"]
 nih_plug = { git = "https://github.com/Z3U2/nih-plug", branch = "fix-macos-windows-vst3-import" }
+nih_plug_egui = { git = "https://github.com/Z3U2/nih-plug", branch = "fix-macos-windows-vst3-import" }

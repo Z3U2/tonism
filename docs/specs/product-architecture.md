@@ -67,7 +67,7 @@ Naming the failure modes per layer is what makes the OKR key results concrete: e
 
 | Concern | Decision | Reference |
 |---|---|---|
-| Language, plugin framework, audio I/O, GUI | Rust + nih-plug + cpal + VIZIA/egui | [ADR-001](../adr/001-language-choice.md) |
+| Language, plugin framework, audio I/O, GUI | Rust + nih-plug + cpal + egui | [ADR-001](../adr/001-language-choice.md), [ADR-004](../adr/004-gui-library-egui.md) |
 | Quarterly objectives & key results | See OKRs Q1 | [okrs/q1.md](../okrs/q1.md) |
 | Week-1 MVP scope and acceptance criteria | See MVP spec | [mvp/spec.md](mvp/spec.md) |
 | Commit message conventions | Conventional Commits, English | [standards/commit-style.md](../standards/commit-style.md) |

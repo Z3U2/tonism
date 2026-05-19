@@ -6,10 +6,10 @@ use egui::Visuals;
 use nih_plug::prelude::Editor;
 use nih_plug_egui::{EguiSettings, EguiState, create_egui_editor, widgets};
 
-use crate::audio::latency::{CAPTURE_LEN, CaptureState, KRONECKER_REF, LatencyHandle};
+use crate::audio::latency::{CAPTURE_LEN, CaptureState, LatencyHandle, N_IMPULSES};
 use crate::audio::params::TonismParams;
 use crate::audio::xrun::XrunCounter;
-use crate::domain::latency::measure_latency;
+use crate::domain::latency::{DEFAULT_MIN_LAG_SAMPLES, measure_latency};
 use crate::domain::types::SampleRate;
 
 /// Presentation state for the latency readout label.
@@ -149,14 +149,25 @@ pub fn create(
                     }
                     CaptureState::Done => {
                         latency_handle.read_capture_into(&mut latency_state.capture_buf);
+
+                        // Diagnostic log: per-chunk peak position + amplitude.
+                        // Helps debug "no signal" — distinguishes
+                        // (a) impulse echo detected with one bad chunk
+                        // (b) all chunks finding random noise (no real echo)
+                        log_capture_diagnostics(&latency_state.capture_buf);
+
                         let result = measure_latency(
-                            &KRONECKER_REF,
                             &latency_state.capture_buf,
-                            // TODO(v0.2): plumb actual session SR from
-                            // Plugin::initialize through an Arc<AtomicU32>
-                            // mirroring the XrunCounter pattern.
+                            N_IMPULSES,
+                            DEFAULT_MIN_LAG_SAMPLES,
+                            // TODO(v0.2): plumb actual session SR from Plugin::initialize
+                            // through an Arc<AtomicU32> mirroring the XrunCounter pattern.
                             SampleRate::new(48_000.0),
                         );
+                        match &result {
+                            Ok(ms) => tracing::info!(target: "tonism::latency", "measured {} ms", ms.value()),
+                            Err(e) => tracing::warn!(target: "tonism::latency", "measurement failed: {:?}", e),
+                        }
                         latency_state.display = match result {
                             Ok(ms) => LatencyDisplay::Measured(ms.value()),
                             Err(_) => LatencyDisplay::NoSignal,
@@ -182,6 +193,38 @@ pub fn create(
             });
         },
     )
+}
+
+/// Log per-chunk peak position and amplitude from a capture buffer.
+///
+/// Diagnostic only — fires on every completed measurement so the user can
+/// distinguish "impulse detected but one chunk noisy" from "no consistent
+/// echo anywhere in the capture."  Runs on the GUI thread; not subject to
+/// the A2 audio-thread constraints.
+fn log_capture_diagnostics(capture: &[f32]) {
+    if capture.len() < N_IMPULSES {
+        return;
+    }
+    let chunk_len = capture.len() / N_IMPULSES;
+    let sr = 48_000.0_f32; // matches the hard-coded SR used by measure_latency
+    for k in 0..N_IMPULSES {
+        let start = k * chunk_len;
+        let end = start + chunk_len;
+        let chunk = &capture[start..end];
+        let (best_lag, best_amp) = chunk.iter().enumerate().skip(DEFAULT_MIN_LAG_SAMPLES).fold(
+            (DEFAULT_MIN_LAG_SAMPLES, 0.0_f32),
+            |acc, (i, &v)| {
+                let a = v.abs();
+                if a > acc.1 { (i, a) } else { acc }
+            },
+        );
+        let ms = (best_lag as f32 / sr) * 1000.0;
+        tracing::info!(
+            target: "tonism::latency",
+            "chunk {}: peak {:.4} at lag {} ({:.2} ms @ 48 kHz)",
+            k, best_amp, best_lag, ms,
+        );
+    }
 }
 
 #[cfg(test)]

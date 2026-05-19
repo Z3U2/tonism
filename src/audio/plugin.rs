@@ -93,13 +93,23 @@ impl Plugin for TonismPlugin {
     const EMAIL: &'static str = "ilyassnasr@gmail.com";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
+    // Tonism is a guitar processor: input is mono by definition.  Default to
+    // 1-in / 2-out so a mono mic / mono interface input + stereo headphones
+    // works out of the box.  The standalone wrapper uses AUDIO_IO_LAYOUTS[0]
+    // and does not iterate; the additional layouts are kept as fallbacks for
+    // hosts (DAWs) that do iterate, and for any future fork that does the same.
     const AUDIO_IO_LAYOUTS: &'static [AudioIOLayout] = &[
         AudioIOLayout {
-            main_input_channels: NonZeroU32::new(2),
+            main_input_channels: NonZeroU32::new(1),
             main_output_channels: NonZeroU32::new(2),
             aux_input_ports: &[],
             aux_output_ports: &[],
             names: PortNames::const_default(),
+        },
+        AudioIOLayout {
+            main_input_channels: NonZeroU32::new(2),
+            main_output_channels: NonZeroU32::new(2),
+            ..AudioIOLayout::const_default()
         },
         AudioIOLayout {
             main_input_channels: NonZeroU32::new(1),

@@ -11,13 +11,11 @@ use crate::domain::types::SampleRate;
 /// Covers > 90 ms at 44.1 kHz — comfortable headroom over the < 10 ms dev target.
 pub const CAPTURE_LEN: usize = 4096;
 
-/// 1024-sample Kronecker reference used for GUI-side cross-correlation.
-/// Sample 0 is 1.0; the rest are zero.  Mirrors the test fixture in mvp-01.
-pub const KRONECKER_REF: [f32; 1024] = {
-    let mut a = [0.0_f32; 1024];
-    a[0] = 1.0;
-    a
-};
+/// Number of impulses emitted across the capture window for robust median measurement.
+pub const N_IMPULSES: usize = 4;
+
+/// Sample distance between impulse emissions. CAPTURE_LEN / N_IMPULSES.
+pub const IMPULSE_INTERVAL: usize = CAPTURE_LEN / N_IMPULSES;
 
 /// State of the capture state machine.
 ///
@@ -50,8 +48,9 @@ impl CaptureState {
 // LatencyMeter
 // ---------------------------------------------------------------------------
 
-/// Audio-shell `Process` block that captures a loopback signal and emits a
-/// Kronecker impulse to bootstrap round-trip latency measurement.
+/// Audio-shell `Process` block that captures a loopback signal and emits
+/// `N_IMPULSES` unit impulses (one at the start of each equal-length chunk of
+/// the capture window) to bootstrap robust median-based latency measurement.
 ///
 /// ## Realtime safety invariants (`process()`)
 ///
@@ -59,17 +58,13 @@ impl CaptureState {
 ///   once in `Default::default()`.
 /// - No locking: only `AtomicU8`, `AtomicU32`, `AtomicBool` operations.
 /// - No syscall / filesystem / logging on the per-buffer path.
-/// - `write_idx` and `emit_impulse_pending` are audio-thread-local scratch;
-///   they are never shared.
+/// - `write_idx` is audio-thread-local scratch; it is never shared.
 pub struct LatencyMeter {
     capture_buffer: Arc<[AtomicU32; CAPTURE_LEN]>,
     state: Arc<AtomicU8>,
     arm_request: Arc<AtomicBool>,
     /// Audio-thread-local write cursor into `capture_buffer`.
     write_idx: usize,
-    /// Audio-thread-local flag: true while the single-sample impulse has not
-    /// yet been emitted for the current capture window.
-    emit_impulse_pending: bool,
 }
 
 impl Default for LatencyMeter {
@@ -79,7 +74,6 @@ impl Default for LatencyMeter {
             state: Arc::new(AtomicU8::new(CaptureState::Idle as u8)),
             arm_request: Arc::new(AtomicBool::new(false)),
             write_idx: 0,
-            emit_impulse_pending: false,
         }
     }
 }
@@ -90,7 +84,6 @@ impl Process for LatencyMeter {
 
     fn reset(&mut self) {
         self.write_idx = 0;
-        self.emit_impulse_pending = false;
         self.state
             .store(CaptureState::Idle as u8, Ordering::Release);
         // Note: `arm_request` is intentionally NOT cleared here.  It is a
@@ -104,11 +97,10 @@ impl Process for LatencyMeter {
     ///
     /// State machine:
     /// 1. If `arm_request` was true AND state == Idle: transition → Capturing,
-    ///    reset `write_idx`, set `emit_impulse_pending`.
+    ///    reset `write_idx`.
     /// 2. While not Capturing: leave the buffer untouched.
     /// 3. While Capturing: store the inbound sample (before overwriting), then
-    ///    overwrite with the impulse on the very first sample of the window
-    ///    (`emit_impulse_pending` cleared immediately after that one sample).
+    ///    overwrite with 1.0 at each chunk boundary (`write_idx % IMPULSE_INTERVAL == 0`).
     ///    Transition → Done once `CAPTURE_LEN` samples have been stored.
     fn process(&mut self, buffer: &mut [f32]) {
         // Step 1: consume the arm request.  swap(false) is atomic with AcqRel
@@ -116,7 +108,6 @@ impl Process for LatencyMeter {
         let armed = self.arm_request.swap(false, Ordering::AcqRel);
         if armed && self.state.load(Ordering::Acquire) == CaptureState::Idle as u8 {
             self.write_idx = 0;
-            self.emit_impulse_pending = true;
             self.state
                 .store(CaptureState::Capturing as u8, Ordering::Release);
         }
@@ -126,7 +117,7 @@ impl Process for LatencyMeter {
             return;
         }
 
-        // Step 3: per-sample capture + optional impulse overwrite.
+        // Step 3: per-sample capture + impulse overwrite at chunk boundaries.
         for sample in buffer.iter_mut() {
             if self.write_idx >= CAPTURE_LEN {
                 break;
@@ -135,15 +126,9 @@ impl Process for LatencyMeter {
             // Capture the inbound value BEFORE any overwrite.
             self.capture_buffer[self.write_idx].store(sample.to_bits(), Ordering::Release);
 
-            // Emit the Kronecker impulse on the very first sample of the window
-            // only (one sample wide).
-            if self.emit_impulse_pending {
-                *sample = if self.write_idx == 0 { 1.0 } else { 0.0 };
-                if self.write_idx == 0 {
-                    // Impulse is exactly one sample — clear flag immediately so
-                    // subsequent samples in this buffer are NOT overwritten.
-                    self.emit_impulse_pending = false;
-                }
+            // Emit a unit impulse at the start of each chunk of the capture window.
+            if self.write_idx.is_multiple_of(IMPULSE_INTERVAL) {
+                *sample = 1.0;
             }
 
             self.write_idx += 1;
@@ -293,42 +278,68 @@ mod tests {
     }
 
     #[test]
-    fn meter_emits_impulse_on_first_frame_of_capture_window() {
+    fn meter_emits_impulse_at_each_chunk_boundary() {
+        // Drive 4096 samples through the meter pre-filled with 0.5.
+        // The output should have 1.0 at positions 0, 1024, 2048, 3072 and 0.5 elsewhere.
         let (mut meter, handle) = make();
         handle.request_measurement();
-        let mut buf = vec![0.5_f32; 64];
+        let mut buf = vec![0.5_f32; CAPTURE_LEN]; // single 4096-sample call
         meter.process(&mut buf);
-        // Only the very first sample should be overwritten with 1.0.
-        assert!(
-            (buf[0] - 1.0).abs() < 1e-9,
-            "buf[0] should be impulse 1.0, got {}",
-            buf[0]
-        );
-        // All subsequent samples should be untouched (0.5).
-        for (i, &s) in buf[1..].iter().enumerate() {
-            assert!(
-                (s - 0.5).abs() < 1e-9,
-                "buf[{i}] should be unchanged 0.5, got {s}"
-            );
+
+        for (i, &s) in buf.iter().enumerate() {
+            if i % IMPULSE_INTERVAL == 0 {
+                assert!(
+                    (s - 1.0).abs() < 1e-9,
+                    "buf[{i}] should be impulse 1.0, got {s}"
+                );
+            } else {
+                assert!(
+                    (s - 0.5).abs() < 1e-9,
+                    "buf[{i}] should be unchanged 0.5, got {s}"
+                );
+            }
         }
     }
 
     #[test]
     fn meter_captures_input_before_overwriting() {
+        // Drive 4096 samples pre-filled with 0.5.
+        // At every chunk boundary the output is overwritten with 1.0, but the
+        // capture buffer must store the ORIGINAL 0.5.
         let (mut meter, handle) = make();
         handle.request_measurement();
-        let mut buf = vec![0.5_f32; 64];
+        let mut buf = vec![0.5_f32; CAPTURE_LEN];
         meter.process(&mut buf);
-        // The capture buffer stores the ORIGINAL input, not the overwritten 1.0.
-        let captured_slot_0 = f32::from_bits(meter.capture_buffer[0].load(Ordering::Acquire));
+
+        // Non-boundary: capture[1] holds original 0.5.
+        let slot1 = f32::from_bits(meter.capture_buffer[1].load(Ordering::Acquire));
         assert!(
-            (captured_slot_0 - 0.5).abs() < 1e-9,
-            "capture[0] should be original 0.5, got {captured_slot_0}"
+            (slot1 - 0.5).abs() < 1e-9,
+            "capture[1] should be original 0.5, got {slot1}"
         );
-        let captured_slot_1 = f32::from_bits(meter.capture_buffer[1].load(Ordering::Acquire));
-        assert!(
-            (captured_slot_1 - 0.5).abs() < 1e-9,
-            "capture[1] should be 0.5, got {captured_slot_1}"
+
+        // Verify "capture before overwrite" at every chunk boundary.
+        for k in 0..N_IMPULSES {
+            let idx = k * IMPULSE_INTERVAL;
+            let captured = f32::from_bits(meter.capture_buffer[idx].load(Ordering::Acquire));
+            assert!(
+                (captured - 0.5).abs() < 1e-9,
+                "capture[{idx}] (chunk {k} boundary) should be original 0.5, got {captured}"
+            );
+        }
+    }
+
+    #[test]
+    fn meter_default_has_n_impulses_module_constants_consistent() {
+        assert_eq!(
+            CAPTURE_LEN % N_IMPULSES,
+            0,
+            "CAPTURE_LEN must be divisible by N_IMPULSES"
+        );
+        assert_eq!(
+            IMPULSE_INTERVAL,
+            CAPTURE_LEN / N_IMPULSES,
+            "IMPULSE_INTERVAL must equal CAPTURE_LEN / N_IMPULSES"
         );
     }
 

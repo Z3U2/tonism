@@ -240,9 +240,21 @@ calling into it), or gated behind a `plugin-export` cargo feature.
 
 **Guarantees:** the impl continues to consume the same `src/domain/` API
 the cpal-direct path does. When it diverges from compiling, that is a
-loud signal — never a silent skew. Decision between "always compile" vs
-"feature-gated" is made at the end of phase B once the new path's shape
-is concrete.
+loud signal — never a silent skew.
+
+**Decision (recorded at Phase C entry):** **feature-gated** behind
+`plugin-export`. Default `cargo build` excludes `nih_plug`,
+`nih_plug_egui`, and `egui` from the dep graph; `src/audio/params.rs`,
+`src/audio/plugin.rs`, and `src/gui/editor.rs` are excluded from the
+build. CI runs both feature configurations (`default` and
+`--features plugin-export`) so the dormant impl cannot silently drift.
+
+Rationale: nih-plug + nih_plug_egui pull a large dep tree (CLAP / VST3
+SDKs, the standalone wrapper's cpal layer, baseview, egui-baseview);
+keeping them in the default build added meaningful compile-time friction
+to the cpal-direct iteration loop. Feature-gating cuts that cost and
+also makes the structural pivot explicit at every `cargo build`
+invocation.
 
 ## Phased plan
 
@@ -271,9 +283,9 @@ off). Still no GUI, no live params.
 **Exit:** 5-minute clean-audio session through `Gain::process` and any
 other domain blocks. Proves C2 + the domain seam.
 
-**Decision point at exit:** is C10 always-compiled or feature-gated?
-The answer depends on whether keeping the `Plugin` impl compiling adds
-friction to the new path's iteration speed. Record the call in this spec.
+**Decision point at exit (resolved):** **feature-gated** behind
+`plugin-export`. See [C10](#c10--dormant-plugin-impl) above for the
+rationale and CI obligation.
 
 ### Phase C — Parameter system + smoothing (C3 + C4)
 

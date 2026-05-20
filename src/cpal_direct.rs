@@ -1,0 +1,301 @@
+//! cpal-direct standalone entry point (C8 composition root, partial).
+//!
+//! Phase C of the ADR-005 pivot. Builds on Phase B's domain-in-the-callback
+//! shape by adding:
+//!
+//! - **C3 (param system)**: input_gain + output_gain + bypass + test_signal
+//!   live as lock-free [`crate::params`] handles. The audio thread reads
+//!   them per frame; a future GUI thread (Phase D+) writes them via the
+//!   handles.
+//! - **C4 (smoothing)**: float params advance their per-sample
+//!   [`crate::domain::smoother::LinearSmoother`] every frame, click-free.
+//! - **C9 (A2 enforcement)**: each cpal callback body is wrapped in
+//!   [`assert_no_alloc_audio`], a no-op when `debug-assert-no-alloc` is
+//!   off and a hard-panic gate when it's on.
+//! - **Test harness**: `--ramp` (CLI flag) spawns a thread that walks
+//!   `output_gain` through a -60→0 dB cycle so the smoother can be heard
+//!   to be click-free across the full range.
+//!
+//! Signal path:
+//!
+//! ```text
+//! input  →  ×input_gain (smoothed)  →  rtrb ring
+//!                                          ↓
+//!                                  Gain::process (0 dB)
+//!                                          ↓
+//!                                  ×output_gain (smoothed)
+//!                                          ↓
+//!                                        output
+//! ```
+//!
+//! `bypass` and `test_signal` exist in the param set so the surface
+//! matches the nih-plug `TonismParams` it replaces, but they are not
+//! yet read inside the callback — Phase F wires them in alongside the
+//! latency meter + sine generator re-integration.
+//!
+//! # Shared with `src/main.rs` and `src/bin/feedback.rs`
+//!
+//! Both binaries call [`run`]. `src/main.rs` (the default `tonism` bin
+//! when `plugin-export` is off) dispatches here; `src/bin/feedback.rs`
+//! is the explicit cpal-only entry for iteration during Phase C–G.
+
+use anyhow::Context;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rtrb::RingBuffer;
+
+use crate::domain::blocks::gain::Gain;
+use crate::domain::process::Process;
+use crate::domain::types::{Decibels, GainLinear, SampleRate};
+use crate::params::{FloatParamHandle, TonismParams, TonismParamsAudio};
+
+/// Delay between input and output, in milliseconds. Absorbs clock drift
+/// between input and output devices that are not running on the same
+/// hardware clock. Matches the upstream `cpal/examples/feedback.rs`
+/// default; will shrink in Phase G when device-pair / aggregate-device
+/// assumptions land.
+const LATENCY_MS: f32 = 150.0;
+
+/// Upper bound on samples per cpal callback, passed to [`Process::prepare`]
+/// so stateful domain blocks can pre-allocate. Generous so it covers
+/// worst-case interleaved buffers (8192 frames × 8 channels).
+const MAX_BLOCK_SIZE: usize = 8192 * 8;
+
+/// Smoothing time used when `--ramp` is on. Production trims smooth in
+/// ~20 ms (per [`TonismParams::PRODUCTION_SMOOTHING_SECS`]) which is too
+/// fast to perceive as anything other than "instantaneous level
+/// change." The ramp test exists to demonstrate the smoother audibly,
+/// so it gets a duration that sounds like a real fade.
+const RAMP_SMOOTHING_SECS: f32 = 1.0;
+
+// ----------------------------------------------------------------------
+// C9: A2 enforcement (cfg-gated).
+// ----------------------------------------------------------------------
+
+/// Wrap an audio-thread closure in [`assert_no_alloc::assert_no_alloc`]
+/// when the `debug-assert-no-alloc` feature is on; pass through
+/// otherwise. The no-op version compiles to a direct call so there is
+/// no overhead in release builds.
+///
+/// Pairs with the `#[global_allocator]` declaration in each binary
+/// (`src/main.rs`, `src/bin/feedback.rs`) which is also cfg-gated.
+#[cfg(feature = "debug-assert-no-alloc")]
+#[inline]
+fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
+    assert_no_alloc::assert_no_alloc(f)
+}
+
+#[cfg(not(feature = "debug-assert-no-alloc"))]
+#[inline(always)]
+fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
+    f()
+}
+
+// ----------------------------------------------------------------------
+// Entry point.
+// ----------------------------------------------------------------------
+
+/// Boot a cpal-direct duplex standalone session. Blocks until the user
+/// presses `<Enter>`, then drops the streams and returns.
+///
+/// Accepts one CLI flag (parsed straight from [`std::env::args`] to
+/// avoid pulling clap into the always-on dep surface):
+///
+/// - `--ramp`: spawn a worker thread that walks `output_gain` through
+///   a -60→0 dB cycle so the smoother's click-freeness is audible.
+pub fn run() -> anyhow::Result<()> {
+    let ramp_test = std::env::args().any(|a| a == "--ramp");
+
+    // ----- cpal devices + config -----
+    let host = cpal::default_host();
+    let input_device = host
+        .default_input_device()
+        .context("no default input device available")?;
+    let output_device = host
+        .default_output_device()
+        .context("no default output device available")?;
+
+    println!("Using input device:  {:?}", device_label(&input_device));
+    println!("Using output device: {:?}", device_label(&output_device));
+
+    let config: cpal::StreamConfig = input_device.default_input_config()?.into();
+    let channels = config.channels as usize;
+    let sr = SampleRate::new(config.sample_rate as f32);
+
+    // ----- Params: build the GUI side (handles) + audio side (smoothed). -----
+    //
+    // Production smoothing time (20 ms) is fast enough that you cannot
+    // hear the smoother as a fade — transitions sound instant but
+    // click-free. For the `--ramp` test we override to `RAMP_SMOOTHING_SECS`
+    // so the curve is audibly perceptible; otherwise the test only
+    // proves "no click," not "smoother is doing the work."
+    let smoothing_time_secs = if ramp_test {
+        RAMP_SMOOTHING_SECS
+    } else {
+        TonismParams::PRODUCTION_SMOOTHING_SECS
+    };
+    let (gui_params, mut audio_params) = TonismParams::new(smoothing_time_secs);
+    audio_params.input_gain.prepare(sr);
+    audio_params.output_gain.prepare(sr);
+    // Snap on construction so the first frame doesn't ramp from a
+    // stale default; useful when later phases tear down + rebuild the
+    // audio stream while preserving param state.
+    audio_params.input_gain.snap_to_target();
+    audio_params.output_gain.snap_to_target();
+
+    // ----- Ring: same shape as Phase A/B. -----
+    let latency_frames = (LATENCY_MS / 1_000.0) * config.sample_rate as f32;
+    let latency_samples = latency_frames as usize * channels;
+    let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
+    for _ in 0..latency_samples {
+        producer
+            .push(0.0)
+            .expect("ring has 2× headroom for the pre-fill");
+    }
+
+    // ----- Domain Gain block: same as Phase B. -----
+    let mut gain_block = Gain {
+        db: Decibels::default(),
+    };
+    gain_block.prepare(sr, MAX_BLOCK_SIZE);
+    gain_block.reset();
+
+    // Destructure audio_params: input_gain travels with the input
+    // callback, output_gain with the output callback. bypass +
+    // test_signal are unused in Phase C (Phase F wires them in).
+    let TonismParamsAudio {
+        input_gain: mut input_gain_audio,
+        output_gain: mut output_gain_audio,
+        bypass: _,
+        test_signal: _,
+    } = audio_params;
+
+    // ----- Input callback: per-frame input gain, then push to ring. -----
+    let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
+        assert_no_alloc_audio(|| {
+            let mut fell_behind = false;
+            let mut frame_start = 0;
+            while frame_start < data.len() {
+                let in_gain_db = input_gain_audio.next();
+                let in_gain: GainLinear = Decibels::new(in_gain_db).into();
+                let mul = in_gain.value();
+                for ch in 0..channels {
+                    let scaled = data[frame_start + ch] * mul;
+                    if producer.push(scaled).is_err() {
+                        fell_behind = true;
+                    }
+                }
+                frame_start += channels;
+            }
+            if fell_behind {
+                eprintln!("output stream fell behind — consider increasing LATENCY_MS");
+            }
+        });
+    };
+
+    // ----- Output callback: drain → domain → output gain. -----
+    let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+        assert_no_alloc_audio(|| {
+            let mut fell_behind = false;
+            // Drain the ring into the output slice.
+            for sample in data.iter_mut() {
+                *sample = match consumer.pop() {
+                    Ok(s) => s,
+                    Err(_) => {
+                        fell_behind = true;
+                        0.0
+                    }
+                };
+            }
+            // Domain chain.
+            gain_block.process(data);
+            // Per-frame output gain.
+            let mut frame_start = 0;
+            while frame_start < data.len() {
+                let out_gain_db = output_gain_audio.next();
+                let out_gain: GainLinear = Decibels::new(out_gain_db).into();
+                let mul = out_gain.value();
+                for ch in 0..channels {
+                    data[frame_start + ch] *= mul;
+                }
+                frame_start += channels;
+            }
+            if fell_behind {
+                eprintln!("input stream fell behind — consider increasing LATENCY_MS");
+            }
+        });
+    };
+
+    // ----- Build + start streams. -----
+    println!("Building both streams with f32 samples at {config:?}");
+    let input_stream = input_device.build_input_stream(&config, input_data_fn, err_fn, None)?;
+    let output_stream = output_device.build_output_stream(&config, output_data_fn, err_fn, None)?;
+    println!("Streams built. Starting playback.");
+
+    input_stream.play()?;
+    output_stream.play()?;
+
+    // ----- Optional ramp test harness. -----
+    if ramp_test {
+        spawn_ramp_thread(gui_params.output_gain.clone());
+        println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
+    }
+
+    println!("\nPlaying with {LATENCY_MS:.0} ms of buffered latency.");
+    println!("Press <Enter> to stop.\n");
+
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+
+    drop(input_stream);
+    drop(output_stream);
+    println!("Stopped.");
+    Ok(())
+}
+
+// ----------------------------------------------------------------------
+// Helpers.
+// ----------------------------------------------------------------------
+
+/// Spawn a detached worker thread that periodically retargets
+/// `output_gain` so a listener can verify the smoother is click-free
+/// across the full -60 dB → 0 dB range. The thread exits when the
+/// process exits (no orderly shutdown signal — the main thread's
+/// `<Enter>`-and-drop is the kill switch).
+fn spawn_ramp_thread(handle: FloatParamHandle) {
+    use std::thread;
+    use std::time::Duration;
+    thread::spawn(move || {
+        // Audible-throughout cycle. -18 dB is ~12 % linear volume; you
+        // still hear yourself clearly at all four steps. Earlier
+        // versions dwelt at -40 dB and -60 dB, which is essentially
+        // silent and made the test useless to listen to. The pattern
+        // also includes a brief +0 dB peak so the contrast is obvious.
+        let cycle: &[f32] = &[-18.0, -6.0, 0.0, -6.0];
+        // Step dwell is `RAMP_SMOOTHING_SECS` + 1 s so the listener
+        // hears the full fade, then ~1 s of hold at the new level
+        // before the next transition starts.
+        let step = Duration::from_secs_f32(RAMP_SMOOTHING_SECS + 1.0);
+        loop {
+            for &db in cycle {
+                handle.set(db);
+                eprintln!("[ramp] output_gain target = {db:>5.1} dB");
+                thread::sleep(step);
+            }
+        }
+    });
+}
+
+/// Stream-level error callback. cpal invokes this off the realtime
+/// thread, so plain `eprintln!` is fine.
+fn err_fn(err: cpal::StreamError) {
+    eprintln!("stream error: {err}");
+}
+
+/// Best-effort human-readable device label. Mirrors the pattern used
+/// by `scripts/check_buffer_size.rs`.
+fn device_label(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|desc| desc.name().to_string())
+        .unwrap_or_else(|_| "<unnamed>".into())
+}

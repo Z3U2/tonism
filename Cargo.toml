@@ -21,27 +21,56 @@ path = "scripts/check_buffer_size.rs"
 name = "feedback"
 path = "src/bin/feedback.rs"
 
-# Opt-in profiling features.  See README.md "Profiling" for the recommended
-# invocations.  Keep these OFF in release builds — the assertion has overhead.
+# Opt-in features. See README.md "Profiling" for the recommended invocations.
 [features]
-# Panics on any heap allocation reached from the audio callback.  Enforces A2
-# (architecture standard) and J1 (zero allocations per buffer).  Use during
-# development with `cargo run --features debug-assert-no-alloc`.
-debug-assert-no-alloc = ["nih_plug/assert_process_allocs"]
+# C10 (see docs/adr/005-standalone-audio-cpal-direct.md): gates the dormant
+# nih-plug Plugin impl + nih_plug_egui GUI adapter. When OFF (default), the
+# standalone binary runs the cpal-direct path (src/cpal_direct.rs);
+# src/audio/{params,plugin}.rs and src/gui/editor.rs are excluded from the
+# build. Enable with --features plugin-export to compile the v0.2+ VST3/CLAP-
+# ready surface. CI runs both configurations so the dormant impl does not
+# silently drift.
+plugin-export = [
+    "dep:nih_plug",
+    "dep:nih_plug_egui",
+    "dep:egui",
+]
+
+# Panics on any heap allocation reached from the audio callback. Enforces
+# A2 (architecture standard) and J1 (zero allocations per buffer). Use
+# during development with `cargo run --features debug-assert-no-alloc`.
+# Keep OFF in release builds — the assertion has overhead.
+#
+# The `nih_plug?/assert_process_allocs` entry is conditional: it activates
+# the corresponding nih-plug feature only when nih-plug is itself in the
+# dep graph (i.e. when `plugin-export` is also enabled). When `plugin-export`
+# is off, only `assert_no_alloc` wraps the cpal callback.
+debug-assert-no-alloc = [
+    "dep:assert_no_alloc",
+    "nih_plug?/assert_process_allocs",
+]
 
 [dependencies]
-nih_plug = { git = "https://github.com/BillyDM/nih-plug", features = ["standalone"] }
-nih_plug_egui = { git = "https://github.com/BillyDM/nih-plug" }
-egui = { version = "0.34.1", default-features = false, features = ["default_fonts"] }
+# Always-on (cpal-direct standalone path).
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 thiserror = "2"
 anyhow = "1"
-# rtrb is already a transitive dep via nih-plug; pinned here so the audio
-# log bridge can reference it directly without going through nih-plug internals.
+# rtrb is also a transitive dep via nih-plug when plugin-export is on;
+# pinned here so the audio log bridge + cpal-direct ring can reference it
+# directly without going through nih-plug internals.
 rtrb = "0.3"
 cpal = "0.17.3"
+
+# Optional: enabled by `debug-assert-no-alloc` only.
+assert_no_alloc = { version = "1", optional = true }
+
+# Optional: enabled by `plugin-export` only. The v0.2+ VST3/CLAP-ready
+# surface — kept dormant by default per ADR-005.
+nih_plug = { git = "https://github.com/BillyDM/nih-plug", features = ["standalone"], optional = true }
+nih_plug_egui = { git = "https://github.com/BillyDM/nih-plug", optional = true }
+egui = { version = "0.34.1", default-features = false, features = ["default_fonts"], optional = true }
 
 # Patch: temporarily route nih_plug and nih_plug_egui through our fork to pick
 # up the macOS/Windows vst3 import fix. Drop this once

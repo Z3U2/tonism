@@ -2,10 +2,15 @@
 name = "tonism"
 version = "0.1.0"
 edition = "2024"
+default-run = "tonism"
 
 [[bin]]
 name = "tonism"
 path = "src/main.rs"
+
+[[bin]]
+name = "check-buffer"
+path = "scripts/check_buffer_size.rs"
 
 # Opt-in profiling features.  See README.md "Profiling" for the recommended
 # invocations.  Keep these OFF in release builds — the assertion has overhead.
@@ -27,6 +32,7 @@ anyhow = "1"
 # rtrb is already a transitive dep via nih-plug; pinned here so the audio
 # log bridge can reference it directly without going through nih-plug internals.
 rtrb = "0.3"
+cpal = "0.17.3"
 
 # Patch: temporarily route nih_plug and nih_plug_egui through our fork to pick
 # up the macOS/Windows vst3 import fix. Drop this once

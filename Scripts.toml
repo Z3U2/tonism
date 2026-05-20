@@ -1,0 +1,12 @@
+
+[global_env]
+
+[scripts]
+dev = "cargo run"
+dev-windows= 'cargo run --release -- -b wasapi --output-device "Voicemeeter AUX Input" --input-device "Voicemeeter Out B2"'
+dev-macos= 'cargo run --release -- -b core-audio --output-device "External Headphones" --input-device "External Microphone"'
+build = { command = "cargo build", env = { RUST_LOG = "info" } }
+release = "cargo build --release"
+test = { command = "cargo test", env = { RUST_LOG = "warn" } }
+doc = "cargo doc --no-deps --open"
+check-buffer = "cargo run --bin check-buffer"

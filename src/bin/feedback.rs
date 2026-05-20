@@ -1,31 +1,61 @@
-//! Phase A walking skeleton — direct-cpal duplex passthrough.
+//! Phase B — domain chain in the cpal callback.
 //!
-//! Models the upstream `cpal/examples/feedback.rs` example shape with two
-//! deliberate adaptations:
+//! Evolves the Phase A walking skeleton by inserting Tonism's domain
+//! [`Gain`] block into the output callback. The signal path is now:
+//!
+//! ```text
+//! input stream  →  rtrb ring  →  output stream
+//!                                       ↓
+//!                                 Gain::process(buffer)  ← (0 dB / identity)
+//! ```
+//!
+//! Per `docs/specs/cpal-direct-standalone/spec.md` Phase B, parameters
+//! are hardcoded: gain at 0 dB, bypass off, test-signal off. There is
+//! no GUI, no live params, no smoothing — those land in Phase C+.
+//! Because the gain is unity, output is bit-identical to input; the
+//! point isn't that the audio sounds different, it's that **the
+//! callback path now goes through the domain chain**. A clean 5-minute
+//! session proves the C2 callback shape can host the domain seam (rule
+//! A4) without breaking A2 (no alloc / lock / syscall on the audio
+//! thread).
+//!
+//! # Adaptations from the upstream `cpal/examples/feedback.rs`
+//!
+//! Carried over from Phase A:
 //!
 //! 1. Uses `rtrb` instead of `ringbuf` for the SPSC ring (already in
-//!    Tonism's tree via [`crate::audio::log_bridge`]); avoids adding a
-//!    second ring-buffer crate to the dep surface for the same job.
+//!    Tonism's tree via [`tonism::audio::log_bridge`]).
 //! 2. Runs until `<Enter>` is pressed instead of the example's fixed
-//!    3-second sleep, so the spec's 5-minute clean-audio session can
-//!    complete without a re-run loop.
+//!    3-second sleep, so the spec's 5-minute session fits in one run.
 //!
-//! Nothing else is changed from the example's shape: default input +
-//! default output device, same `StreamConfig` on both sides, a small
-//! latency ring to absorb clock drift between independently-clocked
-//! devices, per-sample push/pop in each callback.
+//! New in Phase B:
+//!
+//! 3. Constructs a domain [`Gain`] block and calls its `prepare` /
+//!    `process` lifecycle methods. `prepare` runs on the main thread
+//!    before the streams start (the trait permits allocation there);
+//!    `process` runs inside the cpal output callback (A2-clean).
+//!
+//! # Channel-layout note
+//!
+//! cpal hands the output callback an **interleaved** `&mut [f32]`.
+//! [`Gain::process`] multiplies every sample by a single scalar, so
+//! interleaved-or-not is irrelevant for unity gain — every sample gets
+//! the same multiplier. A future per-channel DSP block (e.g. a stereo
+//! effect, channel-0-only latency meter) will require either
+//! de-interleaving or evolving the [`Process`] trait. Not Phase B's
+//! problem.
 //!
 //! # Purpose
 //!
-//! This binary is the falsifier for [ADR-005]'s central premise. If it
-//! does NOT produce clean audio on the user's hardware, the
-//! cpal-direct pivot is wrong and the ADR must be reopened. If it DOES
-//! produce clean audio, Phase A's exit criterion is met and Phase B
-//! (domain chain in the callback) can begin.
+//! Phase B's exit gate is a manual 5-minute clean-audio session through
+//! the domain chain on mac + Windows. On pass, Phase C (parameter
+//! system + smoothing) begins. The C10 decision (always-compile vs
+//! feature-gate the dormant `Plugin` impl) is recorded at this phase's
+//! exit per the spec.
 //!
 //! See:
 //! - `docs/adr/005-standalone-audio-cpal-direct.md`
-//! - `docs/specs/cpal-direct-standalone/spec.md` (Phase A)
+//! - `docs/specs/cpal-direct-standalone/spec.md` (Phase B)
 //!
 //! # Usage
 //!
@@ -39,12 +69,23 @@
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::RingBuffer;
+use tonism::domain::blocks::gain::Gain;
+use tonism::domain::process::Process;
+use tonism::domain::types::{Decibels, SampleRate};
 
 /// Delay between input and output, in milliseconds. Absorbs clock drift
 /// between input and output devices that are not running on the same
 /// hardware clock (the common case on consumer hardware). Matches the
 /// upstream `feedback.rs` default.
 const LATENCY_MS: f32 = 150.0;
+
+/// Upper bound on samples per cpal callback, passed to [`Process::prepare`]
+/// so any future stateful domain block can pre-allocate. Generous so it
+/// covers worst-case interleaved buffers (8192 frames × 8 channels).
+/// [`Gain::process`] is stateless and ignores the value; the call is
+/// here to exercise the prepare→process lifecycle per the trait
+/// contract. Phase C+ will plumb the actual cpal buffer size through.
+const MAX_BLOCK_SIZE: usize = 8192 * 8;
 
 fn main() -> anyhow::Result<()> {
     let host = cpal::default_host();
@@ -83,6 +124,18 @@ fn main() -> anyhow::Result<()> {
             .expect("ring has 2× headroom for the pre-fill");
     }
 
+    // Construct + prepare the domain Gain block. Default is 0 dB → unity,
+    // so output is bit-identical to input; the point is exercising the
+    // C2 callback ↔ domain seam, not the audio's audible result.
+    // `prepare` may allocate per the trait contract, so it runs on the
+    // main thread before the audio threads start. Inside the callback
+    // we only call `process`, which is A2-clean.
+    let mut gain_block = Gain {
+        db: Decibels::default(),
+    };
+    gain_block.prepare(SampleRate::new(config.sample_rate as f32), MAX_BLOCK_SIZE);
+    gain_block.reset();
+
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         let mut fell_behind = false;
         for &sample in data {
@@ -97,7 +150,10 @@ fn main() -> anyhow::Result<()> {
 
     let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         let mut fell_behind = false;
-        for sample in data {
+        // Drain the ring into the output slice. `data.iter_mut()` is
+        // explicit (vs `for sample in data`, which would consume the
+        // slice and prevent the `gain_block.process(data)` call below).
+        for sample in data.iter_mut() {
             *sample = match consumer.pop() {
                 Ok(s) => s,
                 Err(_) => {
@@ -106,6 +162,11 @@ fn main() -> anyhow::Result<()> {
                 }
             };
         }
+        // Phase B: the domain chain. Currently just Gain at 0 dB → a
+        // no-op multiplication, but a real call into the domain seam.
+        // A2-clean: `Gain::process` is a tight numeric loop, no alloc /
+        // lock / syscall.
+        gain_block.process(data);
         if fell_behind {
             eprintln!("input stream fell behind — consider increasing LATENCY_MS");
         }

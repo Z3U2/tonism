@@ -64,7 +64,15 @@ rtrb = "0.3"
 cpal = "0.17.3"
 
 # Optional: enabled by `debug-assert-no-alloc` only.
-assert_no_alloc = { version = "1", optional = true }
+#
+# `default-features = false` opts out of the upstream `disable_release`
+# default feature, which would compile `AllocDisabler` out in release
+# builds and turn the whole guard into a no-op. We want the guard to
+# fire on EVERY build that has `debug-assert-no-alloc` enabled — dev or
+# release — so the alloc check is meaningful when iterating on the
+# audio path with `--release` (the usual mode for realtime audio dev,
+# since debug builds are too slow to keep up with cpal callbacks).
+assert_no_alloc = { version = "1", default-features = false, optional = true }
 
 # Optional: enabled by `plugin-export` only. The v0.2+ VST3/CLAP-ready
 # surface — kept dormant by default per ADR-005.

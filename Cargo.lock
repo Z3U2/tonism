@@ -2551,6 +2551,7 @@ name = "tonism"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cpal",
  "egui",
  "nih_plug",
  "nih_plug_egui",

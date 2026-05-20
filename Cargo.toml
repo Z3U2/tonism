@@ -12,6 +12,15 @@ path = "src/main.rs"
 name = "check-buffer"
 path = "scripts/check_buffer_size.rs"
 
+# Phase A walking skeleton for the cpal-direct standalone pivot.  Falsifier
+# binary for ADR-005 — runs only on the user's dev machine for the 5-min
+# clean-audio session, never shipped.  See docs/specs/cpal-direct-standalone/
+# spec.md.  Will be retired (or repurposed as a phase-B/C scratch pad) once
+# Phase A's exit criterion is met.
+[[bin]]
+name = "feedback"
+path = "src/bin/feedback.rs"
+
 # Opt-in profiling features.  See README.md "Profiling" for the recommended
 # invocations.  Keep these OFF in release builds — the assertion has overhead.
 [features]

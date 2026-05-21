@@ -23,11 +23,16 @@
 //! matches the nih-plug `TonismParams` it replaces, but they are not
 //! yet read inside the callback — Phase F wires them in alongside the
 //! latency meter + sine generator re-integration.
+//!
+//! The xrun counter (C5) is shared between audio callbacks and the GUI;
+//! ring over/underflows bump the counter, and the eframe app reads it
+//! each frame for the live display.
 
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::RingBuffer;
 
+use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
 use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
@@ -86,6 +91,7 @@ struct AudioSession {
     _input_stream: cpal::Stream,
     _output_stream: cpal::Stream,
     gui_params: TonismParams,
+    xrun_counter: XrunCounter,
 }
 
 /// Build cpal devices, params, ring, domain blocks, and start both
@@ -145,6 +151,10 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
         test_signal: _,
     } = audio_params;
 
+    let xrun_counter = XrunCounter::default();
+    let input_xrun = xrun_counter.clone();
+    let output_xrun = xrun_counter.clone();
+
     // Input callback: per-frame input gain, then push to ring.
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         assert_no_alloc_audio(|| {
@@ -163,6 +173,7 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
                 frame_start += channels;
             }
             if fell_behind {
+                input_xrun.bump();
                 eprintln!("output stream fell behind — consider increasing LATENCY_MS");
             }
         });
@@ -193,6 +204,7 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
                 frame_start += channels;
             }
             if fell_behind {
+                output_xrun.bump();
                 eprintln!("input stream fell behind — consider increasing LATENCY_MS");
             }
         });
@@ -210,6 +222,7 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
         _input_stream: input_stream,
         _output_stream: output_stream,
         gui_params,
+        xrun_counter,
     })
 }
 
@@ -223,10 +236,15 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
 /// through a dB cycle so the smoother can be heard.
 pub fn run_gui() -> anyhow::Result<()> {
     let ramp_test = std::env::args().any(|a| a == "--ramp");
-    let session = setup_audio(ramp_test)?;
+    let AudioSession {
+        _input_stream,
+        _output_stream,
+        gui_params,
+        xrun_counter,
+    } = setup_audio(ramp_test)?;
 
     if ramp_test {
-        spawn_ramp_thread(session.gui_params.output_gain.clone());
+        spawn_ramp_thread(gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }
 
@@ -236,11 +254,15 @@ pub fn run_gui() -> anyhow::Result<()> {
     eframe::run_native(
         "Tonism",
         crate::gui::standalone::native_options(),
-        Box::new(|cc| Ok(Box::new(crate::gui::standalone::TonismApp::new(cc)))),
+        Box::new(|cc| {
+            Ok(Box::new(crate::gui::standalone::TonismApp::new(
+                cc,
+                gui_params,
+                xrun_counter,
+            )))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
-
-    drop(session);
     println!("Stopped.");
     Ok(())
 }

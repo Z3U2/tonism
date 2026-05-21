@@ -25,15 +25,14 @@ path = "src/bin/feedback.rs"
 [features]
 # C10 (see docs/adr/005-standalone-audio-cpal-direct.md): gates the dormant
 # nih-plug Plugin impl + nih_plug_egui GUI adapter. When OFF (default), the
-# standalone binary runs the cpal-direct path (src/cpal_direct.rs);
-# src/audio/{params,plugin}.rs and src/gui/editor.rs are excluded from the
-# build. Enable with --features plugin-export to compile the v0.2+ VST3/CLAP-
-# ready surface. CI runs both configurations so the dormant impl does not
-# silently drift.
+# standalone binary runs the cpal-direct path (src/cpal_direct.rs) with an
+# eframe GUI window (Phase D+); src/audio/{params,plugin}.rs and
+# src/gui/editor.rs are excluded from the build. Enable with --features
+# plugin-export to compile the v0.2+ VST3/CLAP-ready surface. CI runs both
+# configurations so the dormant impl does not silently drift.
 plugin-export = [
     "dep:nih_plug",
     "dep:nih_plug_egui",
-    "dep:egui",
 ]
 
 # Panics on any heap allocation reached from the audio callback. Enforces
@@ -74,11 +73,16 @@ cpal = "0.17.3"
 # since debug builds are too slow to keep up with cpal callbacks).
 assert_no_alloc = { version = "1", default-features = false, optional = true }
 
+# Always-on: egui + eframe for the cpal-direct standalone GUI (Phase D+).
+# egui is also used transitively by nih_plug_egui when plugin-export is on;
+# Cargo unifies both to the same 0.34.x version.
+egui = { version = "0.34.1", default-features = false, features = ["default_fonts"] }
+eframe = { version = "0.34", default-features = false, features = ["default_fonts", "glow"] }
+
 # Optional: enabled by `plugin-export` only. The v0.2+ VST3/CLAP-ready
 # surface — kept dormant by default per ADR-005.
 nih_plug = { git = "https://github.com/BillyDM/nih-plug", features = ["standalone"], optional = true }
 nih_plug_egui = { git = "https://github.com/BillyDM/nih-plug", optional = true }
-egui = { version = "0.34.1", default-features = false, features = ["default_fonts"], optional = true }
 
 # Patch: temporarily route nih_plug and nih_plug_egui through our fork to pick
 # up the macOS/Windows vst3 import fix. Drop this once

@@ -7,10 +7,11 @@
 //! Dispatches between two entry paths at compile time per ADR-005's C10
 //! decision:
 //!
-//! - **Default** (no features): the cpal-direct standalone path lives in
-//!   [`tonism::cpal_direct::run`]. Same code that `cargo run --bin
-//!   feedback` invokes, surfaced as the default `tonism` binary so
-//!   `cargo run` Just Works without flags.
+//! - **Default** (no features): the cpal-direct standalone path with an
+//!   eframe GUI window. [`tonism::cpal_direct::run_gui`] opens the audio
+//!   streams + a native window; closing the window tears down the session.
+//!   For headless iteration, `cargo run --bin feedback` runs the stdin-
+//!   blocking variant.
 //! - **`--features plugin-export`**: routes to nih-plug's standalone
 //!   wrapper via `nih_export_standalone!`. Exists so the v0.2+ VST3 /
 //!   CLAP-ready surface stays exercised and CI catches drift; not the
@@ -18,7 +19,7 @@
 //!
 //! See:
 //! - `docs/adr/005-standalone-audio-cpal-direct.md` (C10 decision)
-//! - `docs/specs/cpal-direct-standalone/spec.md` (Phase C / Phase H)
+//! - `docs/specs/cpal-direct-standalone/spec.md` (Phases D–H)
 
 // C9 global allocator. When `plugin-export` is also on, nih-plug's own
 // `assert_process_allocs` feature installs its own global allocator;
@@ -53,9 +54,9 @@ fn run() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Default entry: the cpal-direct standalone path. Same code path as
-/// `cargo run --bin feedback` — both call [`tonism::cpal_direct::run`].
+/// Default entry: the cpal-direct standalone path with an eframe GUI
+/// window. `cargo run --bin feedback` runs the headless variant.
 #[cfg(not(feature = "plugin-export"))]
 fn run() -> anyhow::Result<()> {
-    tonism::cpal_direct::run()
+    tonism::cpal_direct::run_gui()
 }

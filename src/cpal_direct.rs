@@ -1,20 +1,11 @@
-//! cpal-direct standalone entry point (C8 composition root, partial).
+//! cpal-direct standalone entry point (C8 composition root).
 //!
-//! Phase C of the ADR-005 pivot. Builds on Phase B's domain-in-the-callback
-//! shape by adding:
+//! Two public entries:
 //!
-//! - **C3 (param system)**: input_gain + output_gain + bypass + test_signal
-//!   live as lock-free [`crate::params`] handles. The audio thread reads
-//!   them per frame; a future GUI thread (Phase D+) writes them via the
-//!   handles.
-//! - **C4 (smoothing)**: float params advance their per-sample
-//!   [`crate::domain::smoother::LinearSmoother`] every frame, click-free.
-//! - **C9 (A2 enforcement)**: each cpal callback body is wrapped in
-//!   [`assert_no_alloc_audio`], a no-op when `debug-assert-no-alloc` is
-//!   off and a hard-panic gate when it's on.
-//! - **Test harness**: `--ramp` (CLI flag) spawns a thread that walks
-//!   `output_gain` through a -60→0 dB cycle so the smoother can be heard
-//!   to be click-free across the full range.
+//! - [`run_gui`]: opens an eframe window (C6) alongside the running audio
+//!   stream. Used by `src/main.rs` (the default `tonism` binary).
+//! - [`run`]: headless, blocks on stdin. Used by `src/bin/feedback.rs`
+//!   for iteration without a window.
 //!
 //! Signal path:
 //!
@@ -32,12 +23,6 @@
 //! matches the nih-plug `TonismParams` it replaces, but they are not
 //! yet read inside the callback — Phase F wires them in alongside the
 //! latency meter + sine generator re-integration.
-//!
-//! # Shared with `src/main.rs` and `src/bin/feedback.rs`
-//!
-//! Both binaries call [`run`]. `src/main.rs` (the default `tonism` bin
-//! when `plugin-export` is off) dispatches here; `src/bin/feedback.rs`
-//! is the explicit cpal-only entry for iteration during Phase C–G.
 
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -94,18 +79,19 @@ fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
 // Entry point.
 // ----------------------------------------------------------------------
 
-/// Boot a cpal-direct duplex standalone session. Blocks until the user
-/// presses `<Enter>`, then drops the streams and returns.
-///
-/// Accepts one CLI flag (parsed straight from [`std::env::args`] to
-/// avoid pulling clap into the always-on dep surface):
-///
-/// - `--ramp`: spawn a worker thread that walks `output_gain` through
-///   a -60→0 dB cycle so the smoother's click-freeness is audible.
-pub fn run() -> anyhow::Result<()> {
-    let ramp_test = std::env::args().any(|a| a == "--ramp");
+/// A running audio session. Holds the cpal streams and the GUI-side
+/// param handles. Streams run on their own threads; dropping this
+/// struct stops playback.
+struct AudioSession {
+    _input_stream: cpal::Stream,
+    _output_stream: cpal::Stream,
+    gui_params: TonismParams,
+}
 
-    // ----- cpal devices + config -----
+/// Build cpal devices, params, ring, domain blocks, and start both
+/// streams. The returned [`AudioSession`] keeps the streams alive;
+/// dropping it stops playback.
+fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
     let host = cpal::default_host();
     let input_device = host
         .default_input_device()
@@ -121,13 +107,9 @@ pub fn run() -> anyhow::Result<()> {
     let channels = config.channels as usize;
     let sr = SampleRate::new(config.sample_rate as f32);
 
-    // ----- Params: build the GUI side (handles) + audio side (smoothed). -----
-    //
-    // Production smoothing time (20 ms) is fast enough that you cannot
-    // hear the smoother as a fade — transitions sound instant but
-    // click-free. For the `--ramp` test we override to `RAMP_SMOOTHING_SECS`
-    // so the curve is audibly perceptible; otherwise the test only
-    // proves "no click," not "smoother is doing the work."
+    // Production smoothing (20 ms) is inaudible as a fade but
+    // click-free. The `--ramp` test overrides to a longer time so the
+    // smoother's curve is audibly perceptible.
     let smoothing_time_secs = if ramp_test {
         RAMP_SMOOTHING_SECS
     } else {
@@ -136,13 +118,10 @@ pub fn run() -> anyhow::Result<()> {
     let (gui_params, mut audio_params) = TonismParams::new(smoothing_time_secs);
     audio_params.input_gain.prepare(sr);
     audio_params.output_gain.prepare(sr);
-    // Snap on construction so the first frame doesn't ramp from a
-    // stale default; useful when later phases tear down + rebuild the
-    // audio stream while preserving param state.
     audio_params.input_gain.snap_to_target();
     audio_params.output_gain.snap_to_target();
 
-    // ----- Ring: same shape as Phase A/B. -----
+    // Ring buffer (same shape as Phase A/B).
     let latency_frames = (LATENCY_MS / 1_000.0) * config.sample_rate as f32;
     let latency_samples = latency_frames as usize * channels;
     let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
@@ -152,16 +131,13 @@ pub fn run() -> anyhow::Result<()> {
             .expect("ring has 2× headroom for the pre-fill");
     }
 
-    // ----- Domain Gain block: same as Phase B. -----
+    // Domain Gain block.
     let mut gain_block = Gain {
         db: Decibels::default(),
     };
     gain_block.prepare(sr, MAX_BLOCK_SIZE);
     gain_block.reset();
 
-    // Destructure audio_params: input_gain travels with the input
-    // callback, output_gain with the output callback. bypass +
-    // test_signal are unused in Phase C (Phase F wires them in).
     let TonismParamsAudio {
         input_gain: mut input_gain_audio,
         output_gain: mut output_gain_audio,
@@ -169,7 +145,7 @@ pub fn run() -> anyhow::Result<()> {
         test_signal: _,
     } = audio_params;
 
-    // ----- Input callback: per-frame input gain, then push to ring. -----
+    // Input callback: per-frame input gain, then push to ring.
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         assert_no_alloc_audio(|| {
             let mut fell_behind = false;
@@ -192,11 +168,10 @@ pub fn run() -> anyhow::Result<()> {
         });
     };
 
-    // ----- Output callback: drain → domain → output gain. -----
+    // Output callback: drain → domain → output gain.
     let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         assert_no_alloc_audio(|| {
             let mut fell_behind = false;
-            // Drain the ring into the output slice.
             for sample in data.iter_mut() {
                 *sample = match consumer.pop() {
                     Ok(s) => s,
@@ -206,9 +181,7 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 };
             }
-            // Domain chain.
             gain_block.process(data);
-            // Per-frame output gain.
             let mut frame_start = 0;
             while frame_start < data.len() {
                 let out_gain_db = output_gain_audio.next();
@@ -225,7 +198,6 @@ pub fn run() -> anyhow::Result<()> {
         });
     };
 
-    // ----- Build + start streams. -----
     println!("Building both streams with f32 samples at {config:?}");
     let input_stream = input_device.build_input_stream(&config, input_data_fn, err_fn, None)?;
     let output_stream = output_device.build_output_stream(&config, output_data_fn, err_fn, None)?;
@@ -234,9 +206,53 @@ pub fn run() -> anyhow::Result<()> {
     input_stream.play()?;
     output_stream.play()?;
 
-    // ----- Optional ramp test harness. -----
+    Ok(AudioSession {
+        _input_stream: input_stream,
+        _output_stream: output_stream,
+        gui_params,
+    })
+}
+
+/// Boot the cpal-direct standalone with an eframe GUI window (C6).
+///
+/// The audio stream runs on cpal's threads; the eframe event loop runs
+/// on the main thread (required by macOS/winit). Closing the window
+/// returns control here, dropping the streams.
+///
+/// CLI flag `--ramp` spawns a worker thread that walks `output_gain`
+/// through a dB cycle so the smoother can be heard.
+pub fn run_gui() -> anyhow::Result<()> {
+    let ramp_test = std::env::args().any(|a| a == "--ramp");
+    let session = setup_audio(ramp_test)?;
+
     if ramp_test {
-        spawn_ramp_thread(gui_params.output_gain.clone());
+        spawn_ramp_thread(session.gui_params.output_gain.clone());
+        println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
+    }
+
+    println!("\nPlaying with {LATENCY_MS:.0} ms of buffered latency.");
+    println!("Close the window to stop.\n");
+
+    eframe::run_native(
+        "Tonism",
+        crate::gui::standalone::native_options(),
+        Box::new(|cc| Ok(Box::new(crate::gui::standalone::TonismApp::new(cc)))),
+    )
+    .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
+
+    drop(session);
+    println!("Stopped.");
+    Ok(())
+}
+
+/// Headless entry: blocks on stdin instead of opening a window. Used by
+/// `src/bin/feedback.rs` for iteration without a GUI.
+pub fn run() -> anyhow::Result<()> {
+    let ramp_test = std::env::args().any(|a| a == "--ramp");
+    let session = setup_audio(ramp_test)?;
+
+    if ramp_test {
+        spawn_ramp_thread(session.gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }
 
@@ -246,8 +262,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
 
-    drop(input_stream);
-    drop(output_stream);
+    drop(session);
     println!("Stopped.");
     Ok(())
 }

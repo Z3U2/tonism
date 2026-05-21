@@ -1,6 +1,6 @@
 # cpal-direct standalone — WIP log
 
-**Status (21/05/2026):** Phase E merged. Phase F is next.
+**Status (21/05/2026):** Phase E merged. Phase F stories written — see [stories.md](stories.md).
 
 ## Phases completed
 
@@ -35,11 +35,24 @@
   through. Phase F re-integrates these alongside the sine generator +
   latency meter.
 
+## Phase F — stories
+
+User stories for Phase F are split into three deliverables — see [stories.md](stories.md) for the full index:
+
+| ID  | Title                                          | Layers          | Size |
+| --- | ---------------------------------------------- | --------------- | ---- |
+| F01 | Bypass toggle and 440 Hz test-signal           | Capture+Render  | S    |
+| F02 | LatencyMeter wired into cpal output callback   | Capture+Render  | S    |
+| F03 | Latency measurement button and readout in GUI  | Control surface | S    |
+
+Dependency chain: F01 → F02 → F03.
+
+Key design decision (deinterleave): pre-allocated scratch buffer extracts channel 0 from interleaved cpal output, runs `LatencyMeter::process`, writes back. No domain-layer changes. See TR notes in stories.md.
+
 ## Phases ahead
 
 | Phase | What lands                                                                                                                                                                                                                                |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **F** | `LatencyMeter` + test-signal toggle re-integrated. The deinterleave-vs-`Process`-trait question (channel-0-only meter on an interleaved cpal buffer) gets addressed here.                                                                  |
 | **G** | Device picker UX + persisted last-used `(input, output, SR, buffer size)` to the OS-conventional config location.                                                                                                                          |
 | **H** | Cutover: remove the `nih_export_standalone!` runtime use (currently gated on `plugin-export`); update `docs/standards/architecture.md` "pending decisions" section (composition-root location + lock-free GUI↔audio primitive — both now resolved). |
 

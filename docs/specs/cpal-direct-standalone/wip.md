@@ -1,6 +1,6 @@
 # cpal-direct standalone — WIP log
 
-**Status (21/05/2026):** Phase E merged. Phase F is next.
+**Status (22/05/2026):** Phase F implemented — [PR #13](https://github.com/Z3U2/tonism/pull/13) open. Pending manual 5-min verification.
 
 ## Phases completed
 
@@ -24,32 +24,51 @@
 - **`assert_no_alloc` opt-out of `disable_release`** — fix-up commit on PR #10.
   Without this, the C9 guard becomes a no-op in `--release`, exactly the mode
   realtime audio dev runs in.
+- **Deinterleave for LatencyMeter** — pre-allocated 256 KB scratch buffer
+  extracts channel 0 from the interleaved cpal output, runs
+  `LatencyMeter::process`, writes back. No domain-layer changes. Decided in
+  Phase F (PR #13).
 
 ## Open follow-ups
 
 - **CI gate for `--features plugin-export`** — spec calls for both feature
   configurations in CI so the dormant `Plugin` impl can't silently drift.
   Small GHA workflow PR, not yet open.
-- **`bypass` + `test_signal` not yet read by the cpal callback** — constructed
-  in `TonismParams::new()` but only `input_gain` + `output_gain` are wired
-  through. Phase F re-integrates these alongside the sine generator +
-  latency meter.
+
+## Phase F — [PR #13](https://github.com/Z3U2/tonism/pull/13) (open)
+
+All three stories implemented in a single PR:
+
+| ID  | Title                                          | Layers          | Status |
+| --- | ---------------------------------------------- | --------------- | ------ |
+| F01 | Bypass toggle and 440 Hz test-signal           | Capture+Render  | Done   |
+| F02 | LatencyMeter wired into cpal output callback   | Capture+Render  | Done   |
+| F03 | Latency measurement button and readout in GUI  | Control surface | Done   |
+
+Additional commits on the PR:
+- `disarm()` fix: pending arm requests are cleared under bypass so a stale
+  arm doesn't fire when bypass toggles off.
+- `--input <name>` / `--output <name>` CLI flags: select audio devices by
+  name substring (case-insensitive) without changing system defaults.
+  Groundwork for Phase G.
+
+Pending: manual 5-min verification session with loopback cable.
 
 ## Phases ahead
 
 | Phase | What lands                                                                                                                                                                                                                                |
 | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **F** | `LatencyMeter` + test-signal toggle re-integrated. The deinterleave-vs-`Process`-trait question (channel-0-only meter on an interleaved cpal buffer) gets addressed here.                                                                  |
 | **G** | Device picker UX + persisted last-used `(input, output, SR, buffer size)` to the OS-conventional config location.                                                                                                                          |
 | **H** | Cutover: remove the `nih_export_standalone!` runtime use (currently gated on `plugin-export`); update `docs/standards/architecture.md` "pending decisions" section (composition-root location + lock-free GUI↔audio primitive — both now resolved). |
 
-## Verification baseline (last run: 21/05/2026)
+## Verification baseline (last run: 22/05/2026)
 
-- **Default features** — 50 tests pass (45 lib + 2 integration + 3 smoke; 1 doctest ignored). `eframe` + `egui` in dep graph; `nih_plug` absent.
-- **`--features plugin-export`** — 51 tests pass (one extra in the plugin-export-gated surface). `nih_plug` surface compiles.
+- **Default features** — 52 tests pass (46 lib + 3 integration + 3 smoke; 1 doctest ignored). `eframe` + `egui` in dep graph; `nih_plug` absent.
+- **`--features plugin-export`** — 53 tests pass (one extra in the plugin-export-gated surface). `nih_plug` surface compiles.
 - **`--features debug-assert-no-alloc`** — clean; `AllocDisabler` live in release thanks to the `default-features = false` opt-out.
 - **`--features plugin-export,debug-assert-no-alloc`** — clean; our global allocator yields to nih-plug's via the `not(feature = "plugin-export")` clause in `src/main.rs` and `src/bin/feedback.rs`.
-- **`cargo run`** — eframe window opens alongside running cpal audio streams; sliders and checkboxes wired to audio params via lock-free atomics. Xrun counter displays live.
+- **`cargo run`** — eframe window opens; sliders, bypass, test signal, xrun counter, and "Measure latency" button all functional. Latency readout shows ms on loopback, "no signal" without.
+- **`cargo run -- --input "BlackHole" --output "BlackHole"`** — device selection by name works.
 - **`cargo run --bin feedback`** — headless stdin-blocking path unchanged.
 
 ## References

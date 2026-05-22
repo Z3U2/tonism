@@ -160,6 +160,7 @@ pub fn create(
                             &latency_state.capture_buf,
                             N_IMPULSES,
                             DEFAULT_MIN_LAG_SAMPLES,
+                            0,
                             // TODO(v0.2): plumb actual session SR from Plugin::initialize
                             // through an Arc<AtomicU32> mirroring the XrunCounter pattern.
                             SampleRate::new(48_000.0),

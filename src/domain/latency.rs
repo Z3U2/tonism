@@ -42,19 +42,24 @@ const MAX_IMPULSES: usize = 8;
 /// corrupt the result; only when fewer than `n_impulses / 2 + 1` chunks
 /// converge does the function reject the capture as noise-dominated.
 ///
+/// `ring_latency_samples` is the known internal ring-buffer pre-fill in frames.
+/// It is subtracted from the median lag so the result reflects hardware +
+/// processing latency only.
+///
 /// # Arguments
 ///
-/// * `loopback`         — the captured loopback signal; must satisfy
+/// * `loopback`              — the captured loopback signal; must satisfy
 ///   `loopback.len() / n_impulses > min_lag_samples`.
-/// * `n_impulses`       — number of impulses emitted (1 …= [`MAX_IMPULSES`]).
-/// * `min_lag_samples`  — samples to skip at the start of each chunk (typically
+/// * `n_impulses`            — number of impulses emitted (1 …= [`MAX_IMPULSES`]).
+/// * `min_lag_samples`       — samples to skip at the start of each chunk (typically
 ///   [`DEFAULT_MIN_LAG_SAMPLES`]).
-/// * `sr`               — the session sample rate; must be positive.
+/// * `ring_latency_samples`  — known ring-buffer pre-fill to subtract (frames).
+/// * `sr`                    — the session sample rate; must be positive.
 ///
 /// # Returns
 ///
-/// `Ok(LatencyMs)` — the median per-chunk peak lag expressed in milliseconds,
-/// rounded to one decimal place.
+/// `Ok(LatencyMs)` — the median per-chunk peak lag minus the ring latency,
+/// expressed in milliseconds, rounded to one decimal place.
 ///
 /// # Errors
 ///
@@ -68,6 +73,7 @@ pub fn measure_latency(
     loopback: &[f32],
     n_impulses: usize,
     min_lag_samples: usize,
+    ring_latency_samples: usize,
     sr: SampleRate,
 ) -> Result<LatencyMs, DomainError> {
     // --- Validation ---
@@ -132,7 +138,8 @@ pub fn measure_latency(
         return Err(DomainError::LatencyNoPeak);
     }
 
-    let ms_raw = (median_lag as f32 / sr.value()) * 1000.0;
+    let adjusted_lag = median_lag.saturating_sub(ring_latency_samples);
+    let ms_raw = (adjusted_lag as f32 / sr.value()) * 1000.0;
     Ok(LatencyMs::new(ms_raw))
 }
 
@@ -166,7 +173,7 @@ mod tests {
             for &sr in sample_rates {
                 let loopback = build_multi_impulse_loopback(4, 2048, delay);
 
-                let result = measure_latency(&loopback, 4, 0, SampleRate::new(sr));
+                let result = measure_latency(&loopback, 4, 0, 0, SampleRate::new(sr));
                 assert!(
                     result.is_ok(),
                     "expected Ok for delay={delay} sr={sr}, got {result:?}"
@@ -184,7 +191,7 @@ mod tests {
     #[test]
     fn silent_loopback_returns_no_peak() {
         let loopback = vec![0.0_f32; 8192];
-        let result = measure_latency(&loopback, 4, 16, SampleRate::new(48_000.0));
+        let result = measure_latency(&loopback, 4, 16, 0, SampleRate::new(48_000.0));
         assert!(
             matches!(result, Err(DomainError::LatencyNoPeak)),
             "expected LatencyNoPeak, got {result:?}"
@@ -194,7 +201,7 @@ mod tests {
     #[test]
     fn loopback_shorter_than_min_lag_returns_too_short() {
         let loopback = vec![0.0_f32; 64];
-        let result = measure_latency(&loopback, 4, 100, SampleRate::new(48_000.0));
+        let result = measure_latency(&loopback, 4, 100, 0, SampleRate::new(48_000.0));
         assert!(
             matches!(result, Err(DomainError::LoopbackTooShort)),
             "expected LoopbackTooShort, got {result:?}"
@@ -204,7 +211,7 @@ mod tests {
     #[test]
     fn sample_rate_zero_returns_invalid_sample_rate() {
         let loopback = build_multi_impulse_loopback(4, 2048, 32);
-        let result = measure_latency(&loopback, 4, 16, SampleRate::new(0.0));
+        let result = measure_latency(&loopback, 4, 16, 0, SampleRate::new(0.0));
         assert!(
             matches!(result, Err(DomainError::InvalidSampleRate(0))),
             "expected InvalidSampleRate(0), got {result:?}"
@@ -232,7 +239,7 @@ mod tests {
         loopback[2 * chunk_len + 800] = 1.0;
         loopback[3 * chunk_len + 800] = 1.0;
 
-        let result = measure_latency(&loopback, n_impulses, 0, SampleRate::new(48_000.0));
+        let result = measure_latency(&loopback, n_impulses, 0, 0, SampleRate::new(48_000.0));
         assert!(
             result.is_ok(),
             "expected Ok with 3-of-4 majority, got {result:?}"
@@ -255,10 +262,31 @@ mod tests {
         loopback[2 * chunk_len + 800] = 1.0;
         loopback[3 * chunk_len + 800] = 1.0;
 
-        let result = measure_latency(&loopback, n_impulses, 0, SampleRate::new(48_000.0));
+        let result = measure_latency(&loopback, n_impulses, 0, 0, SampleRate::new(48_000.0));
         assert!(
             matches!(result, Err(DomainError::LatencyNoPeak)),
             "expected LatencyNoPeak for 2/2 split, got {result:?}"
         );
+    }
+
+    #[test]
+    fn ring_latency_subtracted_from_result() {
+        let delay = 7200usize;
+        let ring = 7000usize;
+        let loopback = build_multi_impulse_loopback(4, 8192, delay);
+        let result = measure_latency(&loopback, 4, 0, ring, SampleRate::new(48_000.0));
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        let expected = round_to_1dp(((delay - ring) as f32 / 48_000.0) * 1000.0);
+        assert_eq!(result.unwrap().value(), expected);
+    }
+
+    #[test]
+    fn ring_latency_saturates_to_zero() {
+        let delay = 100usize;
+        let ring = 7000usize;
+        let loopback = build_multi_impulse_loopback(4, 8192, delay);
+        let result = measure_latency(&loopback, 4, 0, ring, SampleRate::new(48_000.0));
+        assert!(result.is_ok(), "expected Ok, got {result:?}");
+        assert_eq!(result.unwrap().value(), 0.0);
     }
 }

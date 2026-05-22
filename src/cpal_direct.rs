@@ -19,19 +19,24 @@
 //!                                        output
 //! ```
 //!
-//! `bypass` and `test_signal` exist in the param set so the surface
-//! matches the nih-plug `TonismParams` it replaces, but they are not
-//! yet read inside the callback — Phase F wires them in alongside the
-//! latency meter + sine generator re-integration.
+//! Phase F additions: `bypass` gates all processing (passthrough when
+//! on), `test_signal` injects a 440 Hz sine in place of mic input,
+//! `LatencyMeter` captures loopback on channel 0 of the output buffer
+//! (deinterleaved via a pre-allocated scratch buffer).
 //!
 //! The xrun counter (C5) is shared between audio callbacks and the GUI;
 //! ring over/underflows bump the counter, and the eframe app reads it
 //! each frame for the live display.
 
+use std::f32::consts::TAU;
+use std::sync::Arc;
+use std::sync::atomic::AtomicU32;
+
 use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::RingBuffer;
 
+use crate::audio::latency::{CAPTURE_LEN, LatencyHandle, LatencyMeter};
 use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
 use crate::domain::process::Process;
@@ -92,19 +97,83 @@ struct AudioSession {
     _output_stream: cpal::Stream,
     gui_params: TonismParams,
     xrun_counter: XrunCounter,
+    latency_handle: LatencyHandle,
+    sample_rate: Arc<AtomicU32>,
+    ring_latency_frames: usize,
+}
+
+/// CLI options parsed from `std::env::args()`.
+struct CliOpts {
+    ramp_test: bool,
+    input_device_name: Option<String>,
+    output_device_name: Option<String>,
+}
+
+fn parse_cli() -> CliOpts {
+    let args: Vec<String> = std::env::args().collect();
+    let ramp_test = args.iter().any(|a| a == "--ramp");
+    let input_device_name = args
+        .iter()
+        .position(|a| a == "--input")
+        .and_then(|i| args.get(i + 1).cloned());
+    let output_device_name = args
+        .iter()
+        .position(|a| a == "--output")
+        .and_then(|i| args.get(i + 1).cloned());
+    CliOpts {
+        ramp_test,
+        input_device_name,
+        output_device_name,
+    }
+}
+
+/// Find a device by name substring (case-insensitive). If not found,
+/// lists all available devices and returns an error.
+fn find_device(
+    host: &cpal::Host,
+    name: &str,
+    direction: &str,
+) -> anyhow::Result<cpal::Device> {
+    let devices: Vec<cpal::Device> = if direction == "input" {
+        host.input_devices()?.collect()
+    } else {
+        host.output_devices()?.collect()
+    };
+    let name_lower = name.to_lowercase();
+    for dev in &devices {
+        if let Ok(label) = dev.description()
+            && label.name().to_lowercase().contains(&name_lower)
+        {
+            return Ok(dev.clone());
+        }
+    }
+    // Not found — print available devices to help the user.
+    eprintln!("No {direction} device matching \"{name}\". Available:");
+    for dev in &devices {
+        if let Ok(label) = dev.description() {
+            eprintln!("  - {}", label.name());
+        }
+    }
+    anyhow::bail!("no {direction} device matching \"{name}\"")
 }
 
 /// Build cpal devices, params, ring, domain blocks, and start both
 /// streams. The returned [`AudioSession`] keeps the streams alive;
 /// dropping it stops playback.
-fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
+fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
     let host = cpal::default_host();
-    let input_device = host
-        .default_input_device()
-        .context("no default input device available")?;
-    let output_device = host
-        .default_output_device()
-        .context("no default output device available")?;
+    let input_device = match &opts.input_device_name {
+        Some(name) => find_device(&host, name, "input")?,
+        None => host
+            .default_input_device()
+            .context("no default input device available")?,
+    };
+    let output_device = match &opts.output_device_name {
+        Some(name) => find_device(&host, name, "output")?,
+        None => host
+            .default_output_device()
+            .context("no default output device available")?,
+    };
 
     println!("Using input device:  {:?}", device_label(&input_device));
     println!("Using output device: {:?}", device_label(&output_device));
@@ -116,7 +185,7 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
     // Production smoothing (20 ms) is inaudible as a fade but
     // click-free. The `--ramp` test overrides to a longer time so the
     // smoother's curve is audibly perceptible.
-    let smoothing_time_secs = if ramp_test {
+    let smoothing_time_secs = if opts.ramp_test {
         RAMP_SMOOTHING_SECS
     } else {
         TonismParams::PRODUCTION_SMOOTHING_SECS
@@ -129,6 +198,12 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
 
     // Ring buffer (same shape as Phase A/B).
     let latency_frames = (LATENCY_MS / 1_000.0) * config.sample_rate as f32;
+    assert!(
+        CAPTURE_LEN > latency_frames as usize,
+        "CAPTURE_LEN ({CAPTURE_LEN}) must exceed ring pre-fill ({} frames) \
+         so the latency meter can capture the echo",
+        latency_frames as usize,
+    );
     let latency_samples = latency_frames as usize * channels;
     let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
     for _ in 0..latency_samples {
@@ -147,25 +222,64 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
     let TonismParamsAudio {
         input_gain: mut input_gain_audio,
         output_gain: mut output_gain_audio,
-        bypass: _,
-        test_signal: _,
+        bypass,
+        test_signal,
     } = audio_params;
+
+    // LatencyMeter (C5) — captures loopback on channel 0, emits impulses.
+    let mut latency_meter = LatencyMeter::default();
+    let latency_handle = latency_meter.handle();
+    latency_meter.prepare(sr, MAX_BLOCK_SIZE);
+    latency_meter.reset();
+
+    // Pre-allocated scratch buffer for channel-0 deinterleave. Sized to
+    // the worst-case frame count (MAX_BLOCK_SIZE covers the interleaved
+    // total; dividing by channels gives the frame count, but mono is the
+    // worst case where frames == samples).
+    let mut ch0_scratch: Vec<f32> = vec![0.0; MAX_BLOCK_SIZE];
+
+    // Shared sample rate for the GUI's measure_latency() call.
+    let sample_rate_shared = Arc::new(AtomicU32::new(sr.value().to_bits()));
 
     let xrun_counter = XrunCounter::default();
     let input_xrun = xrun_counter.clone();
     let output_xrun = xrun_counter.clone();
 
-    // Input callback: per-frame input gain, then push to ring.
+    // Clone bypass for the output closure; test_signal moves into input only.
+    let input_bypass = bypass.clone();
+    let output_bypass = bypass;
+
+    // Phase accumulator for the 440 Hz test-signal sine generator.
+    let phase_inc = TAU * 440.0 / sr.value();
+    let mut phase: f32 = 0.0;
+
+    // Input callback: optionally inject test signal, apply input gain
+    // (skipped under bypass), push to ring.
     let input_data_fn = move |data: &[f32], _: &cpal::InputCallbackInfo| {
         assert_no_alloc_audio(|| {
+            let is_bypass = input_bypass.value();
+            let is_test_signal = test_signal.value();
             let mut fell_behind = false;
             let mut frame_start = 0;
             while frame_start < data.len() {
-                let in_gain_db = input_gain_audio.next();
-                let in_gain: GainLinear = Decibels::new(in_gain_db).into();
-                let mul = in_gain.value();
+                let sine = phase.sin();
+                phase = (phase + phase_inc) % TAU;
+
+                let mul = if is_bypass {
+                    1.0
+                } else {
+                    let in_gain_db = input_gain_audio.next();
+                    let in_gain: GainLinear = Decibels::new(in_gain_db).into();
+                    in_gain.value()
+                };
+
                 for ch in 0..channels {
-                    let scaled = data[frame_start + ch] * mul;
+                    let raw = if is_test_signal {
+                        sine
+                    } else {
+                        data[frame_start + ch]
+                    };
+                    let scaled = raw * mul;
                     if producer.push(scaled).is_err() {
                         fell_behind = true;
                     }
@@ -179,7 +293,8 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
         });
     };
 
-    // Output callback: drain → domain → output gain.
+    // Output callback: drain ring → latency meter (ch0) → domain gain
+    // block → output gain. All processing skipped under bypass.
     let output_data_fn = move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
         assert_no_alloc_audio(|| {
             let mut fell_behind = false;
@@ -192,17 +307,35 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
                     }
                 };
             }
-            gain_block.process(data);
-            let mut frame_start = 0;
-            while frame_start < data.len() {
-                let out_gain_db = output_gain_audio.next();
-                let out_gain: GainLinear = Decibels::new(out_gain_db).into();
-                let mul = out_gain.value();
-                for ch in 0..channels {
-                    data[frame_start + ch] *= mul;
+
+            if output_bypass.value() {
+                latency_meter.cancel();
+                latency_meter.disarm();
+            } else {
+                // Deinterleave channel 0 → scratch, process, write back.
+                let n_frames = data.len() / channels;
+                for i in 0..n_frames {
+                    ch0_scratch[i] = data[i * channels];
                 }
-                frame_start += channels;
+                latency_meter.process(&mut ch0_scratch[..n_frames]);
+                for i in 0..n_frames {
+                    data[i * channels] = ch0_scratch[i];
+                }
+
+                gain_block.process(data);
+
+                let mut frame_start = 0;
+                while frame_start < data.len() {
+                    let out_gain_db = output_gain_audio.next();
+                    let out_gain: GainLinear = Decibels::new(out_gain_db).into();
+                    let mul = out_gain.value();
+                    for ch in 0..channels {
+                        data[frame_start + ch] *= mul;
+                    }
+                    frame_start += channels;
+                }
             }
+
             if fell_behind {
                 output_xrun.bump();
                 eprintln!("input stream fell behind — consider increasing LATENCY_MS");
@@ -223,6 +356,9 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
         _output_stream: output_stream,
         gui_params,
         xrun_counter,
+        latency_handle,
+        sample_rate: sample_rate_shared,
+        ring_latency_frames: latency_frames as usize,
     })
 }
 
@@ -232,18 +368,23 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
 /// on the main thread (required by macOS/winit). Closing the window
 /// returns control here, dropping the streams.
 ///
-/// CLI flag `--ramp` spawns a worker thread that walks `output_gain`
-/// through a dB cycle so the smoother can be heard.
+/// CLI flags:
+/// - `--ramp` — smoother audibility test (cycles output_gain)
+/// - `--input <name>` — select input device by name substring
+/// - `--output <name>` — select output device by name substring
 pub fn run_gui() -> anyhow::Result<()> {
-    let ramp_test = std::env::args().any(|a| a == "--ramp");
+    let opts = parse_cli();
     let AudioSession {
         _input_stream,
         _output_stream,
         gui_params,
         xrun_counter,
-    } = setup_audio(ramp_test)?;
+        latency_handle,
+        sample_rate,
+        ring_latency_frames,
+    } = setup_audio(&opts)?;
 
-    if ramp_test {
+    if opts.ramp_test {
         spawn_ramp_thread(gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }
@@ -259,6 +400,9 @@ pub fn run_gui() -> anyhow::Result<()> {
                 cc,
                 gui_params,
                 xrun_counter,
+                latency_handle,
+                sample_rate,
+                ring_latency_frames,
             )))
         }),
     )
@@ -270,10 +414,10 @@ pub fn run_gui() -> anyhow::Result<()> {
 /// Headless entry: blocks on stdin instead of opening a window. Used by
 /// `src/bin/feedback.rs` for iteration without a GUI.
 pub fn run() -> anyhow::Result<()> {
-    let ramp_test = std::env::args().any(|a| a == "--ramp");
-    let session = setup_audio(ramp_test)?;
+    let opts = parse_cli();
+    let session = setup_audio(&opts)?;
 
-    if ramp_test {
+    if opts.ramp_test {
         spawn_ramp_thread(session.gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }

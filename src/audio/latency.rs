@@ -8,9 +8,9 @@ use crate::domain::process::Process;
 use crate::domain::types::SampleRate;
 
 /// Number of samples captured per measurement window.
-/// At 48 kHz each chunk (CAPTURE_LEN / N_IMPULSES = 8192) spans ~170 ms,
-/// which must exceed the ring-buffer pre-fill (currently 150 ms) plus
-/// hardware round-trip so the echo lands inside its own chunk.
+/// Must exceed the full round-trip: ring-buffer pre-fill
+/// ([`crate::cpal_direct::LATENCY_MS`]) plus hardware round-trip.
+/// `setup_audio()` asserts this at startup.
 pub const CAPTURE_LEN: usize = 32768;
 
 /// Number of impulses emitted across the capture window.

@@ -36,7 +36,7 @@ use anyhow::Context;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use rtrb::RingBuffer;
 
-use crate::audio::latency::{LatencyHandle, LatencyMeter};
+use crate::audio::latency::{CAPTURE_LEN, LatencyHandle, LatencyMeter};
 use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
 use crate::domain::process::Process;
@@ -198,6 +198,12 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
 
     // Ring buffer (same shape as Phase A/B).
     let latency_frames = (LATENCY_MS / 1_000.0) * config.sample_rate as f32;
+    assert!(
+        CAPTURE_LEN > latency_frames as usize,
+        "CAPTURE_LEN ({CAPTURE_LEN}) must exceed ring pre-fill ({} frames) \
+         so the latency meter can capture the echo",
+        latency_frames as usize,
+    );
     let latency_samples = latency_frames as usize * channels;
     let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
     for _ in 0..latency_samples {

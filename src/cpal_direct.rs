@@ -242,6 +242,7 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
 
             if output_bypass.value() {
                 latency_meter.cancel();
+                latency_meter.disarm();
             } else {
                 // Deinterleave channel 0 → scratch, process, write back.
                 let n_frames = data.len() / channels;

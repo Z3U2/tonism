@@ -154,6 +154,16 @@ impl LatencyMeter {
         }
     }
 
+    /// Clear a pending arm request without starting capture.
+    ///
+    /// Called on the audio thread when bypass is active — the meter must
+    /// not begin capturing while the signal path is bypassed, otherwise
+    /// a stale arm fires the moment bypass toggles off.  A2-safe: single
+    /// atomic store.
+    pub fn disarm(&mut self) {
+        self.arm_request.store(false, Ordering::Release);
+    }
+
     /// Clone the shared Arcs into a `LatencyHandle` the GUI can hold.
     pub fn handle(&self) -> LatencyHandle {
         LatencyHandle {

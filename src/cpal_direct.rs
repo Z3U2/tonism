@@ -99,6 +99,7 @@ struct AudioSession {
     xrun_counter: XrunCounter,
     latency_handle: LatencyHandle,
     sample_rate: Arc<AtomicU32>,
+    ring_latency_frames: usize,
 }
 
 /// CLI options parsed from `std::env::args()`.
@@ -351,6 +352,7 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
         xrun_counter,
         latency_handle,
         sample_rate: sample_rate_shared,
+        ring_latency_frames: latency_frames as usize,
     })
 }
 
@@ -373,6 +375,7 @@ pub fn run_gui() -> anyhow::Result<()> {
         xrun_counter,
         latency_handle,
         sample_rate,
+        ring_latency_frames,
     } = setup_audio(&opts)?;
 
     if opts.ramp_test {
@@ -393,6 +396,7 @@ pub fn run_gui() -> anyhow::Result<()> {
                 xrun_counter,
                 latency_handle,
                 sample_rate,
+                ring_latency_frames,
             )))
         }),
     )

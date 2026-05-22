@@ -58,6 +58,7 @@ pub struct TonismApp {
     xrun_counter: XrunCounter,
     latency_handle: LatencyHandle,
     sample_rate: Arc<AtomicU32>,
+    ring_latency_frames: usize,
     latency_state: LatencyState,
 }
 
@@ -68,6 +69,7 @@ impl TonismApp {
         xrun_counter: XrunCounter,
         latency_handle: LatencyHandle,
         sample_rate: Arc<AtomicU32>,
+        ring_latency_frames: usize,
     ) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
         Self {
@@ -75,6 +77,7 @@ impl TonismApp {
             xrun_counter,
             latency_handle,
             sample_rate,
+            ring_latency_frames,
             latency_state: LatencyState::default(),
         }
     }
@@ -124,15 +127,20 @@ impl eframe::App for TonismApp {
                 self.latency_handle
                     .read_capture_into(&mut self.latency_state.capture_buf);
 
-                log_capture_diagnostics(&self.latency_state.capture_buf);
-
                 let sr_bits = self.sample_rate.load(Ordering::Relaxed);
                 let sr = SampleRate::new(f32::from_bits(sr_bits));
+
+                log_capture_diagnostics(
+                    &self.latency_state.capture_buf,
+                    sr.value(),
+                    self.ring_latency_frames,
+                );
 
                 let result = measure_latency(
                     &self.latency_state.capture_buf,
                     N_IMPULSES,
                     DEFAULT_MIN_LAG_SAMPLES,
+                    self.ring_latency_frames,
                     sr,
                 );
                 self.latency_state.display = match result {
@@ -157,7 +165,7 @@ impl eframe::App for TonismApp {
     }
 }
 
-fn log_capture_diagnostics(capture: &[f32]) {
+fn log_capture_diagnostics(capture: &[f32], sample_rate: f32, ring_latency_frames: usize) {
     if capture.len() < N_IMPULSES {
         return;
     }
@@ -181,9 +189,10 @@ fn log_capture_diagnostics(capture: &[f32]) {
                     }
                 },
             );
+        let adjusted = best_lag.saturating_sub(ring_latency_frames);
         eprintln!(
-            "[latency] chunk {k}: peak {best_amp:.4} at lag {best_lag} ({:.2} ms)",
-            best_lag as f32 / 48_000.0 * 1000.0,
+            "[latency] chunk {k}: peak {best_amp:.4} at raw_lag {best_lag} adjusted {adjusted} ({:.2} ms)",
+            adjusted as f32 / sample_rate * 1000.0,
         );
     }
 }

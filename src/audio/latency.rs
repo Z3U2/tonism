@@ -8,11 +8,16 @@ use crate::domain::process::Process;
 use crate::domain::types::SampleRate;
 
 /// Number of samples captured per measurement window.
-/// Covers > 90 ms at 44.1 kHz — comfortable headroom over the < 10 ms dev target.
-pub const CAPTURE_LEN: usize = 4096;
+/// At 48 kHz each chunk (CAPTURE_LEN / N_IMPULSES = 8192) spans ~170 ms,
+/// which must exceed the ring-buffer pre-fill (currently 150 ms) plus
+/// hardware round-trip so the echo lands inside its own chunk.
+pub const CAPTURE_LEN: usize = 32768;
 
-/// Number of impulses emitted across the capture window for robust median measurement.
-pub const N_IMPULSES: usize = 4;
+/// Number of impulses emitted across the capture window.
+/// A single impulse avoids cross-chunk confusion when the round-trip delay
+/// exceeds `IMPULSE_INTERVAL` and eliminates echo-bounce contamination in
+/// zero-attenuation digital loopbacks.
+pub const N_IMPULSES: usize = 1;
 
 /// Sample distance between impulse emissions. CAPTURE_LEN / N_IMPULSES.
 pub const IMPULSE_INTERVAL: usize = CAPTURE_LEN / N_IMPULSES;
@@ -127,8 +132,12 @@ impl Process for LatencyMeter {
             self.capture_buffer[self.write_idx].store(sample.to_bits(), Ordering::Release);
 
             // Emit a unit impulse at the start of each chunk of the capture window.
+            // All other samples are muted to prevent the echo from bouncing
+            // back through a zero-attenuation loopback.
             if self.write_idx.is_multiple_of(IMPULSE_INTERVAL) {
                 *sample = 1.0;
+            } else {
+                *sample = 0.0;
             }
 
             self.write_idx += 1;
@@ -288,12 +297,10 @@ mod tests {
     }
 
     #[test]
-    fn meter_emits_impulse_at_each_chunk_boundary() {
-        // Drive 4096 samples through the meter pre-filled with 0.5.
-        // The output should have 1.0 at positions 0, 1024, 2048, 3072 and 0.5 elsewhere.
+    fn meter_emits_impulse_and_mutes_output() {
         let (mut meter, handle) = make();
         handle.request_measurement();
-        let mut buf = vec![0.5_f32; CAPTURE_LEN]; // single 4096-sample call
+        let mut buf = vec![0.5_f32; CAPTURE_LEN];
         meter.process(&mut buf);
 
         for (i, &s) in buf.iter().enumerate() {
@@ -304,8 +311,8 @@ mod tests {
                 );
             } else {
                 assert!(
-                    (s - 0.5).abs() < 1e-9,
-                    "buf[{i}] should be unchanged 0.5, got {s}"
+                    s.abs() < 1e-9,
+                    "buf[{i}] should be muted 0.0, got {s}"
                 );
             }
         }
@@ -357,9 +364,8 @@ mod tests {
     fn meter_completes_after_capture_len_samples() {
         let (mut meter, handle) = make();
         handle.request_measurement();
-        // 4096 / 256 = 16 calls.
         let mut buf = vec![0.0_f32; 256];
-        for _ in 0..16 {
+        for _ in 0..(CAPTURE_LEN / 256) {
             meter.process(&mut buf);
         }
         assert_eq!(handle.state(), CaptureState::Done);
@@ -462,7 +468,7 @@ mod tests {
             let (mut meter, handle) = make();
             handle.request_measurement();
             let mut buf = vec![0.0_f32; 256];
-            for _ in 0..16 {
+            for _ in 0..(CAPTURE_LEN / 256) {
                 meter.process(&mut buf);
             }
             assert_eq!(handle.state(), CaptureState::Done);
@@ -498,9 +504,8 @@ mod tests {
     fn meter_alloc_free_steady_state() {
         let (mut meter, handle) = make();
         handle.request_measurement();
-        // Run through a full capture window to exercise all branches.
         let mut buf = vec![0.0_f32; 256];
-        for _ in 0..16 {
+        for _ in 0..(CAPTURE_LEN / 256) {
             meter.process(&mut buf);
         }
         assert_eq!(handle.state(), CaptureState::Done);

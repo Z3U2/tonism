@@ -101,17 +101,78 @@ struct AudioSession {
     sample_rate: Arc<AtomicU32>,
 }
 
+/// CLI options parsed from `std::env::args()`.
+struct CliOpts {
+    ramp_test: bool,
+    input_device_name: Option<String>,
+    output_device_name: Option<String>,
+}
+
+fn parse_cli() -> CliOpts {
+    let args: Vec<String> = std::env::args().collect();
+    let ramp_test = args.iter().any(|a| a == "--ramp");
+    let input_device_name = args
+        .iter()
+        .position(|a| a == "--input")
+        .and_then(|i| args.get(i + 1).cloned());
+    let output_device_name = args
+        .iter()
+        .position(|a| a == "--output")
+        .and_then(|i| args.get(i + 1).cloned());
+    CliOpts {
+        ramp_test,
+        input_device_name,
+        output_device_name,
+    }
+}
+
+/// Find a device by name substring (case-insensitive). If not found,
+/// lists all available devices and returns an error.
+fn find_device(
+    host: &cpal::Host,
+    name: &str,
+    direction: &str,
+) -> anyhow::Result<cpal::Device> {
+    let devices: Vec<cpal::Device> = if direction == "input" {
+        host.input_devices()?.collect()
+    } else {
+        host.output_devices()?.collect()
+    };
+    let name_lower = name.to_lowercase();
+    for dev in &devices {
+        if let Ok(label) = dev.description()
+            && label.name().to_lowercase().contains(&name_lower)
+        {
+            return Ok(dev.clone());
+        }
+    }
+    // Not found — print available devices to help the user.
+    eprintln!("No {direction} device matching \"{name}\". Available:");
+    for dev in &devices {
+        if let Ok(label) = dev.description() {
+            eprintln!("  - {}", label.name());
+        }
+    }
+    anyhow::bail!("no {direction} device matching \"{name}\"")
+}
+
 /// Build cpal devices, params, ring, domain blocks, and start both
 /// streams. The returned [`AudioSession`] keeps the streams alive;
 /// dropping it stops playback.
-fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
+fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
     let host = cpal::default_host();
-    let input_device = host
-        .default_input_device()
-        .context("no default input device available")?;
-    let output_device = host
-        .default_output_device()
-        .context("no default output device available")?;
+    let input_device = match &opts.input_device_name {
+        Some(name) => find_device(&host, name, "input")?,
+        None => host
+            .default_input_device()
+            .context("no default input device available")?,
+    };
+    let output_device = match &opts.output_device_name {
+        Some(name) => find_device(&host, name, "output")?,
+        None => host
+            .default_output_device()
+            .context("no default output device available")?,
+    };
 
     println!("Using input device:  {:?}", device_label(&input_device));
     println!("Using output device: {:?}", device_label(&output_device));
@@ -123,7 +184,7 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
     // Production smoothing (20 ms) is inaudible as a fade but
     // click-free. The `--ramp` test overrides to a longer time so the
     // smoother's curve is audibly perceptible.
-    let smoothing_time_secs = if ramp_test {
+    let smoothing_time_secs = if opts.ramp_test {
         RAMP_SMOOTHING_SECS
     } else {
         TonismParams::PRODUCTION_SMOOTHING_SECS
@@ -299,10 +360,12 @@ fn setup_audio(ramp_test: bool) -> anyhow::Result<AudioSession> {
 /// on the main thread (required by macOS/winit). Closing the window
 /// returns control here, dropping the streams.
 ///
-/// CLI flag `--ramp` spawns a worker thread that walks `output_gain`
-/// through a dB cycle so the smoother can be heard.
+/// CLI flags:
+/// - `--ramp` — smoother audibility test (cycles output_gain)
+/// - `--input <name>` — select input device by name substring
+/// - `--output <name>` — select output device by name substring
 pub fn run_gui() -> anyhow::Result<()> {
-    let ramp_test = std::env::args().any(|a| a == "--ramp");
+    let opts = parse_cli();
     let AudioSession {
         _input_stream,
         _output_stream,
@@ -310,9 +373,9 @@ pub fn run_gui() -> anyhow::Result<()> {
         xrun_counter,
         latency_handle,
         sample_rate,
-    } = setup_audio(ramp_test)?;
+    } = setup_audio(&opts)?;
 
-    if ramp_test {
+    if opts.ramp_test {
         spawn_ramp_thread(gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }
@@ -341,10 +404,10 @@ pub fn run_gui() -> anyhow::Result<()> {
 /// Headless entry: blocks on stdin instead of opening a window. Used by
 /// `src/bin/feedback.rs` for iteration without a GUI.
 pub fn run() -> anyhow::Result<()> {
-    let ramp_test = std::env::args().any(|a| a == "--ramp");
-    let session = setup_audio(ramp_test)?;
+    let opts = parse_cli();
+    let session = setup_audio(&opts)?;
 
-    if ramp_test {
+    if opts.ramp_test {
         spawn_ramp_thread(session.gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }

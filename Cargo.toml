@@ -61,6 +61,8 @@ anyhow = "1"
 # directly without going through nih-plug internals.
 rtrb = "0.3"
 cpal = "0.17.3"
+serde = { version = "1", features = ["derive"] }
+confy = "0.6"
 
 # Optional: enabled by `debug-assert-no-alloc` only.
 #
@@ -91,3 +93,6 @@ nih_plug_egui = { git = "https://github.com/BillyDM/nih-plug", optional = true }
 [patch."https://github.com/BillyDM/nih-plug"]
 nih_plug = { git = "https://github.com/Z3U2/nih-plug", branch = "fix-macos-windows-vst3-import" }
 nih_plug_egui = { git = "https://github.com/Z3U2/nih-plug", branch = "fix-macos-windows-vst3-import" }
+
+[dev-dependencies]
+serde_json = "1"

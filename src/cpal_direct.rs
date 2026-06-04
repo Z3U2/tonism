@@ -33,9 +33,9 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use rtrb::RingBuffer;
 
-use crate::audio::latency::{CAPTURE_LEN, LatencyHandle, LatencyMeter};
+use crate::audio::latency::{LatencyHandle, LatencyMeter};
+use crate::audio::ring::{AudioRing, LATENCY_MS};
 use crate::audio::rt_guard::assert_no_alloc_audio;
 use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
@@ -43,13 +43,6 @@ use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
 use crate::device::{device_label, err_fn};
 use crate::params::{FloatParamHandle, TonismParams};
-
-/// Delay between input and output, in milliseconds. Absorbs clock drift
-/// between input and output devices that are not running on the same
-/// hardware clock. Matches the upstream `cpal/examples/feedback.rs`
-/// default; will shrink in Phase G when device-pair / aggregate-device
-/// assumptions land.
-const LATENCY_MS: f32 = 150.0;
 
 /// Upper bound on samples per cpal callback, passed to [`Process::prepare`]
 /// so stateful domain blocks can pre-allocate. Generous so it covers
@@ -165,20 +158,9 @@ pub fn build_streams(
     let test_signal = params.test_signal.clone();
 
     // Ring buffer (same shape as Phase A/B).
-    let latency_frames = (LATENCY_MS / 1_000.0) * sample_rate as f32;
-    assert!(
-        CAPTURE_LEN > latency_frames as usize,
-        "CAPTURE_LEN ({CAPTURE_LEN}) must exceed ring pre-fill ({} frames) \
-         so the latency meter can capture the echo",
-        latency_frames as usize,
-    );
-    let latency_samples = latency_frames as usize * channels_usize;
-    let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
-    for _ in 0..latency_samples {
-        producer
-            .push(0.0)
-            .expect("ring has 2× headroom for the pre-fill");
-    }
+    let ring = AudioRing::new(sample_rate, channels);
+    let ring_latency_frames = ring.latency_frames;
+    let (mut producer, mut consumer) = (ring.producer, ring.consumer);
 
     // Domain Gain block.
     let mut gain_block = Gain {
@@ -318,7 +300,7 @@ pub fn build_streams(
         xrun_counter,
         latency_handle,
         sample_rate: sample_rate_shared,
-        ring_latency_frames: latency_frames as usize,
+        ring_latency_frames,
     })
 }
 

@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod latency;
 pub mod log_bridge;
+pub mod ring;
 pub mod rt_guard;
 pub mod xrun;
 

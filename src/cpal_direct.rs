@@ -36,6 +36,7 @@ use cpal::traits::{DeviceTrait, StreamTrait};
 use rtrb::RingBuffer;
 
 use crate::audio::latency::{CAPTURE_LEN, LatencyHandle, LatencyMeter};
+use crate::audio::rt_guard::assert_no_alloc_audio;
 use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
 use crate::domain::process::Process;
@@ -60,29 +61,6 @@ const MAX_BLOCK_SIZE: usize = 8192 * 8;
 /// change." The ramp test exists to demonstrate the smoother audibly,
 /// so it gets a duration that sounds like a real fade.
 const RAMP_SMOOTHING_SECS: f32 = 1.0;
-
-// ----------------------------------------------------------------------
-// C9: A2 enforcement (cfg-gated).
-// ----------------------------------------------------------------------
-
-/// Wrap an audio-thread closure in [`assert_no_alloc::assert_no_alloc`]
-/// when the `debug-assert-no-alloc` feature is on; pass through
-/// otherwise. The no-op version compiles to a direct call so there is
-/// no overhead in release builds.
-///
-/// Pairs with the `#[global_allocator]` declaration in each binary
-/// (`src/main.rs`, `src/bin/feedback.rs`) which is also cfg-gated.
-#[cfg(feature = "debug-assert-no-alloc")]
-#[inline]
-fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
-    assert_no_alloc::assert_no_alloc(f)
-}
-
-#[cfg(not(feature = "debug-assert-no-alloc"))]
-#[inline(always)]
-fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
-    f()
-}
 
 // ----------------------------------------------------------------------
 // Entry point.

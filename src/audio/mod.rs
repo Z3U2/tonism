@@ -1,6 +1,7 @@
 pub mod backend;
 pub mod latency;
 pub mod log_bridge;
+pub mod rt_guard;
 pub mod xrun;
 
 // C10 per ADR-005: the nih-plug Plugin impl + its TonismParams alias

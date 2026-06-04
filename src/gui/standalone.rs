@@ -13,7 +13,9 @@ use cpal::traits::DeviceTrait;
 use crate::audio::latency::{CAPTURE_LEN, CaptureState, N_IMPULSES};
 use crate::config::{TonismConfig, save_config};
 use crate::cpal_direct::{AudioStreams, build_streams};
-use crate::device::{DeviceInfo, compute_available_buffer_sizes, compute_common_sample_rates, enumerate_devices};
+use crate::device::{
+    DeviceInfo, compute_available_buffer_sizes, compute_common_sample_rates, enumerate_devices,
+};
 use crate::domain::latency::{DEFAULT_MIN_LAG_SAMPLES, measure_latency};
 use crate::domain::types::SampleRate;
 use crate::params::TonismParams;
@@ -100,27 +102,29 @@ impl TonismApp {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
 
         // Compute initial SR and buffer size lists.
-        let available_sample_rates = if !available_inputs.is_empty() && !available_outputs.is_empty() {
-            compute_common_sample_rates(
-                &available_inputs[initial_input_idx],
-                &available_outputs[initial_output_idx],
-            )
-        } else {
-            vec![initial_sr]
-        };
+        let available_sample_rates =
+            if !available_inputs.is_empty() && !available_outputs.is_empty() {
+                compute_common_sample_rates(
+                    &available_inputs[initial_input_idx],
+                    &available_outputs[initial_output_idx],
+                )
+            } else {
+                vec![initial_sr]
+            };
         let selected_sr_idx = available_sample_rates
             .iter()
             .position(|&r| r == initial_sr)
             .unwrap_or(0);
 
-        let available_buffer_sizes = if !available_inputs.is_empty() && !available_outputs.is_empty() {
-            compute_available_buffer_sizes(
-                &available_inputs[initial_input_idx],
-                &available_outputs[initial_output_idx],
-            )
-        } else {
-            vec![None]
-        };
+        let available_buffer_sizes =
+            if !available_inputs.is_empty() && !available_outputs.is_empty() {
+                compute_available_buffer_sizes(
+                    &available_inputs[initial_input_idx],
+                    &available_outputs[initial_output_idx],
+                )
+            } else {
+                vec![None]
+            };
         let selected_buf_idx = available_buffer_sizes
             .iter()
             .position(|&b| b == initial_buf_size)
@@ -155,14 +159,20 @@ impl TonismApp {
 
         let new_rates = compute_common_sample_rates(input_info, output_info);
         // Try to keep the currently selected rate; fall back to index 0.
-        let current_sr = self.available_sample_rates.get(self.selected_sr_idx).copied();
+        let current_sr = self
+            .available_sample_rates
+            .get(self.selected_sr_idx)
+            .copied();
         self.available_sample_rates = new_rates;
         self.selected_sr_idx = current_sr
             .and_then(|r| self.available_sample_rates.iter().position(|&x| x == r))
             .unwrap_or(0);
 
         let new_bufs = compute_available_buffer_sizes(input_info, output_info);
-        let current_buf = self.available_buffer_sizes.get(self.selected_buf_idx).copied();
+        let current_buf = self
+            .available_buffer_sizes
+            .get(self.selected_buf_idx)
+            .copied();
         self.available_buffer_sizes = new_bufs;
         self.selected_buf_idx = current_buf
             .and_then(|b| self.available_buffer_sizes.iter().position(|&x| x == b))
@@ -171,8 +181,12 @@ impl TonismApp {
 
     /// Apply the current picker selection: stop old streams, build new ones.
     fn apply_device_selection(&mut self) {
-        let input_device = self.available_inputs[self.selected_input_idx].device.clone();
-        let output_device = self.available_outputs[self.selected_output_idx].device.clone();
+        let input_device = self.available_inputs[self.selected_input_idx]
+            .device
+            .clone();
+        let output_device = self.available_outputs[self.selected_output_idx]
+            .device
+            .clone();
 
         let sample_rate = self
             .available_sample_rates
@@ -206,10 +220,8 @@ impl TonismApp {
                 self.streams = Some(new_streams);
 
                 // Persist the new selection.
-                self.config.input_device_id =
-                    input_device.id().ok().map(|id| id.to_string());
-                self.config.output_device_id =
-                    output_device.id().ok().map(|id| id.to_string());
+                self.config.input_device_id = input_device.id().ok().map(|id| id.to_string());
+                self.config.output_device_id = output_device.id().ok().map(|id| id.to_string());
                 self.config.sample_rate = Some(sample_rate);
                 self.config.buffer_size = buffer_size;
                 if let Err(e) = save_config(&self.config) {
@@ -280,7 +292,9 @@ impl eframe::App for TonismApp {
         // Output combo.
         let mut output_changed = false;
         if !self.available_outputs.is_empty() {
-            let selected_output_name = self.available_outputs[self.selected_output_idx].name.clone();
+            let selected_output_name = self.available_outputs[self.selected_output_idx]
+                .name
+                .clone();
             egui::ComboBox::from_label("Output")
                 .selected_text(&selected_output_name)
                 .show_ui(ui, |ui| {
@@ -431,10 +445,10 @@ impl eframe::App for TonismApp {
             }
         }
 
-        if ui.button("Measure latency").clicked() {
-            if let Some(streams) = self.streams.as_ref() {
-                streams.latency_handle.request_measurement();
-            }
+        if ui.button("Measure latency").clicked()
+            && let Some(streams) = self.streams.as_ref()
+        {
+            streams.latency_handle.request_measurement();
         }
 
         ui.label(self.latency_state.display.format());
@@ -459,17 +473,13 @@ fn log_capture_diagnostics(capture: &[f32], sample_rate: f32, ring_latency_frame
         let start = k * chunk_len;
         let end = start + chunk_len;
         let chunk = &capture[start..end];
-        let (best_lag, best_amp) = chunk
-            .iter()
-            .enumerate()
-            .skip(DEFAULT_MIN_LAG_SAMPLES)
-            .fold(
-                (DEFAULT_MIN_LAG_SAMPLES, 0.0_f32),
-                |acc, (i, &v)| {
-                    let a = v.abs();
-                    if a > acc.1 { (i, a) } else { acc }
-                },
-            );
+        let (best_lag, best_amp) = chunk.iter().enumerate().skip(DEFAULT_MIN_LAG_SAMPLES).fold(
+            (DEFAULT_MIN_LAG_SAMPLES, 0.0_f32),
+            |acc, (i, &v)| {
+                let a = v.abs();
+                if a > acc.1 { (i, a) } else { acc }
+            },
+        );
         let adjusted = best_lag.saturating_sub(ring_latency_frames);
         eprintln!(
             "[latency] chunk {k}: peak {best_amp:.4} at raw_lag {best_lag} adjusted {adjusted} ({:.2} ms)",
@@ -480,8 +490,7 @@ fn log_capture_diagnostics(capture: &[f32], sample_rate: f32, ring_latency_frame
 
 pub fn native_options() -> eframe::NativeOptions {
     eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT]),
+        viewport: egui::ViewportBuilder::default().with_inner_size([WINDOW_WIDTH, WINDOW_HEIGHT]),
         ..Default::default()
     }
 }

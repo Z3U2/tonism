@@ -1,6 +1,8 @@
 //! Adapter trait for audio backends.
 //!
-//! `CpalBackend` is the production impl driven by nih-plug's standalone wrapper.
+//! `CpalBackend` is a dormant marker struct; the live cpal audio loop is owned by
+//! `src/cpal_direct.rs` (the C8 composition root) and does not go through this trait.
+//! Under `--features plugin-export`, nih-plug's standalone wrapper takes over instead.
 //! `BufferBackend` is an in-memory fake used by integration tests — it feeds a
 //! pre-recorded input vec through a `Process` impl and captures the output.
 
@@ -8,8 +10,8 @@ use crate::domain::process::Process;
 use crate::domain::types::SampleRate;
 
 /// Drive a `Process` implementation through one or more buffers and surface
-/// any underrun events.  Production wraps cpal via nih-plug; the fake feeds
-/// in-memory vectors.
+/// any underrun events.  The in-memory fake feeds pre-recorded vectors through
+/// this trait; the live cpal path bypasses it and is wired in `cpal_direct`.
 pub trait AudioBackend {
     /// Run the backend until input is exhausted or the implementation decides
     /// to stop.  Blocking call; returns when processing is complete.
@@ -20,12 +22,14 @@ pub trait AudioBackend {
     fn run(&mut self, processor: &mut dyn Process, sample_rate: SampleRate);
 }
 
-/// Production backend driven by nih-plug's standalone wrapper.
+/// Dormant marker for a future cpal-backed `AudioBackend` impl.
 ///
-/// **NOTE**: nih-plug owns the audio loop end-to-end via `nih_export_standalone`.
-/// We don't drive it via `AudioBackend::run` — production lives in `audio::plugin::TonismPlugin`,
-/// which nih-plug invokes directly.  This struct exists only as a marker so future
-/// non-nih-plug backends (offline render, file-based capture) can plug into the same trait.
+/// **NOTE**: the default standalone path does NOT use this struct.  The real audio loop
+/// is built and owned by `cpal_direct::build_streams()` (`src/cpal_direct.rs`), which
+/// wires cpal input/output callbacks directly and never calls `AudioBackend::run`.
+/// Under `--features plugin-export` (dormant VST3/CLAP target), nih-plug's
+/// `nih_export_standalone!` owns the loop instead.  This struct exists as a placeholder
+/// for future non-interactive backends (offline render, file-based capture).
 pub struct CpalBackend;
 
 /// In-memory fake.  Constructed with an input vec and a buffer size; collects

@@ -35,6 +35,7 @@ use std::sync::atomic::AtomicU32;
 use cpal::traits::{DeviceTrait, StreamTrait};
 
 use crate::audio::latency::{LatencyHandle, LatencyMeter};
+use crate::domain::buffer::{deinterleave_channel, interleave_channel};
 use crate::audio::ring::{AudioRing, LATENCY_MS};
 use crate::audio::rt_guard::assert_no_alloc_audio;
 use crate::audio::xrun::XrunCounter;
@@ -257,13 +258,9 @@ pub fn build_streams(
             } else {
                 // Deinterleave channel 0 → scratch, process, write back.
                 let n_frames = data.len() / channels_usize;
-                for i in 0..n_frames {
-                    ch0_scratch[i] = data[i * channels_usize];
-                }
+                deinterleave_channel(data, 0, channels_usize, &mut ch0_scratch);
                 latency_meter.process(&mut ch0_scratch[..n_frames]);
-                for i in 0..n_frames {
-                    data[i * channels_usize] = ch0_scratch[i];
-                }
+                interleave_channel(data, 0, channels_usize, &ch0_scratch);
 
                 gain_block.process(data);
 

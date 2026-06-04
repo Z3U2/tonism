@@ -41,6 +41,7 @@ use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
 use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
+use crate::device::{device_label, err_fn};
 use crate::params::{FloatParamHandle, TonismParams};
 
 /// Delay between input and output, in milliseconds. Absorbs clock drift
@@ -501,17 +502,3 @@ fn spawn_ramp_thread(handle: FloatParamHandle) {
     });
 }
 
-/// Stream-level error callback. cpal invokes this off the realtime
-/// thread, so plain `eprintln!` is fine.
-fn err_fn(err: cpal::StreamError) {
-    eprintln!("stream error: {err}");
-}
-
-/// Best-effort human-readable device label. Mirrors the pattern used
-/// by `scripts/check_buffer_size.rs`.
-fn device_label(device: &cpal::Device) -> String {
-    device
-        .description()
-        .map(|desc| desc.name().to_string())
-        .unwrap_or_else(|_| "<unnamed>".into())
-}

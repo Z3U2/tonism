@@ -392,6 +392,25 @@ fn pick_buffer_size(config_buf: Option<u32>, available: &[Option<u32>]) -> Optio
 }
 
 // ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+/// Stream-level error callback. cpal invokes this off the realtime
+/// thread, so plain `eprintln!` is fine.
+pub fn err_fn(err: cpal::StreamError) {
+    eprintln!("stream error: {err}");
+}
+
+/// Best-effort human-readable device label. Mirrors the pattern used
+/// by `scripts/check_buffer_size.rs`.
+pub fn device_label(device: &cpal::Device) -> String {
+    device
+        .description()
+        .map(|desc| desc.name().to_string())
+        .unwrap_or_else(|_| "<unnamed>".into())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 

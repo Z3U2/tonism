@@ -7,3 +7,8 @@ pre-commit:
     clippy:
       glob: "*.rs"
       run: cargo clippy --all-targets -- -D warnings
+
+pre-push:
+  commands:
+    preflight:
+      run: cargo script preflight

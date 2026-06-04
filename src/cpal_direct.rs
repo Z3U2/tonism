@@ -28,7 +28,6 @@
 //! ring over/underflows bump the counter, and the eframe app reads it
 //! each frame for the live display.
 
-use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
@@ -40,6 +39,7 @@ use crate::audio::ring::{AudioRing, LATENCY_MS};
 use crate::audio::rt_guard::assert_no_alloc_audio;
 use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
+use crate::domain::blocks::test_oscillator::TestOscillator;
 use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
 use crate::device::{device_label, err_fn};
@@ -193,9 +193,9 @@ pub fn build_streams(
     let input_bypass = bypass.clone();
     let output_bypass = bypass;
 
-    // Phase accumulator for the 440 Hz test-signal sine generator.
-    let phase_inc = TAU * 440.0 / sr.value();
-    let mut phase: f32 = 0.0;
+    // Test-signal sine generator.
+    let mut test_osc = TestOscillator::new();
+    test_osc.prepare(sr, MAX_BLOCK_SIZE);
 
     // Input callback: optionally inject test signal, apply input gain
     // (skipped under bypass), push to ring.
@@ -206,8 +206,7 @@ pub fn build_streams(
             let mut fell_behind = false;
             let mut frame_start = 0;
             while frame_start < data.len() {
-                let sine = phase.sin();
-                phase = (phase + phase_inc) % TAU;
+                let sine = test_osc.next_sample();
 
                 let mul = if is_bypass {
                     1.0

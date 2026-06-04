@@ -17,7 +17,11 @@
 name: CI
 
 on:
+  # Run on pushes to main (e.g. after a PR merges) and on every pull request.
+  # Pushes to ephemeral feature branches do NOT trigger a standalone run — the
+  # pull_request event already covers them, so we avoid duplicate CI runs.
   push:
+    branches: [main]
   pull_request:
 
 env:

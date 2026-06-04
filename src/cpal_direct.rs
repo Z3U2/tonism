@@ -32,8 +32,7 @@ use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
-use anyhow::Context;
-use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, StreamTrait};
 use rtrb::RingBuffer;
 
 use crate::audio::latency::{CAPTURE_LEN, LatencyHandle, LatencyMeter};
@@ -41,7 +40,7 @@ use crate::audio::xrun::XrunCounter;
 use crate::domain::blocks::gain::Gain;
 use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
-use crate::params::{FloatParamHandle, TonismParams, TonismParamsAudio};
+use crate::params::{FloatParamHandle, TonismParams};
 
 /// Delay between input and output, in milliseconds. Absorbs clock drift
 /// between input and output devices that are not running on the same
@@ -89,17 +88,16 @@ fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
 // Entry point.
 // ----------------------------------------------------------------------
 
-/// A running audio session. Holds the cpal streams and the GUI-side
-/// param handles. Streams run on their own threads; dropping this
-/// struct stops playback.
-struct AudioSession {
-    _input_stream: cpal::Stream,
-    _output_stream: cpal::Stream,
-    gui_params: TonismParams,
-    xrun_counter: XrunCounter,
-    latency_handle: LatencyHandle,
-    sample_rate: Arc<AtomicU32>,
-    ring_latency_frames: usize,
+/// A running pair of cpal streams. Holds the audio-side state only;
+/// `TonismParams` (GUI handles) lives separately and is passed into
+/// [`build_streams`] by reference. Dropping this struct stops playback.
+pub struct AudioStreams {
+    pub _input_stream: cpal::Stream,
+    pub _output_stream: cpal::Stream,
+    pub xrun_counter: XrunCounter,
+    pub latency_handle: LatencyHandle,
+    pub sample_rate: Arc<AtomicU32>,
+    pub ring_latency_frames: usize,
 }
 
 /// CLI options parsed from `std::env::args()`.
@@ -127,84 +125,75 @@ fn parse_cli() -> CliOpts {
     }
 }
 
-/// Find a device by name substring (case-insensitive). If not found,
-/// lists all available devices and returns an error.
-fn find_device(
-    host: &cpal::Host,
-    name: &str,
-    direction: &str,
-) -> anyhow::Result<cpal::Device> {
-    let devices: Vec<cpal::Device> = if direction == "input" {
-        host.input_devices()?.collect()
-    } else {
-        host.output_devices()?.collect()
-    };
-    let name_lower = name.to_lowercase();
-    for dev in &devices {
-        if let Ok(label) = dev.description()
-            && label.name().to_lowercase().contains(&name_lower)
-        {
-            return Ok(dev.clone());
-        }
-    }
-    // Not found — print available devices to help the user.
-    eprintln!("No {direction} device matching \"{name}\". Available:");
-    for dev in &devices {
-        if let Ok(label) = dev.description() {
-            eprintln!("  - {}", label.name());
-        }
-    }
-    anyhow::bail!("no {direction} device matching \"{name}\"")
+/// Find the index of `device` in `list` by matching device ID strings.
+/// Returns 0 if not found.
+fn find_device_index(list: &[crate::device::DeviceInfo], device: &cpal::Device) -> usize {
+    let target_id = device.id().ok().map(|id| id.to_string());
+    list.iter()
+        .position(|d| target_id.as_deref() == Some(&d.id_string))
+        .unwrap_or(0)
 }
 
-/// Build cpal devices, params, ring, domain blocks, and start both
-/// streams. The returned [`AudioSession`] keeps the streams alive;
-/// dropping it stops playback.
-fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
-    let host = cpal::default_host();
-    let input_device = match &opts.input_device_name {
-        Some(name) => find_device(&host, name, "input")?,
-        None => host
-            .default_input_device()
-            .context("no default input device available")?,
+/// Build the ring buffer, domain blocks, and cpal streams for the given
+/// devices and configuration. The caller is responsible for creating
+/// [`TonismParams`] and resolving the devices; this function borrows
+/// the GUI-side handles to extract fresh audio-side readers.
+///
+/// Returns an [`AudioStreams`] whose lifetime keeps both streams alive.
+/// Dropping it stops playback.
+///
+/// # Parameters
+/// - `input_device` / `output_device` — cpal device handles.
+/// - `sample_rate` — raw sample-rate value in Hz (e.g. `48_000`).
+/// - `buffer_size` — `None` → `cpal::BufferSize::Default`; `Some(n)` →
+///   `cpal::BufferSize::Fixed(n)`.
+/// - `channels` — interleaved channel count used for both streams.
+/// - `params` — GUI-side param handles; smoothed audio readers are
+///   derived from these via [`FloatParamHandle::build_smoothed`].
+/// - `ramp_test` — when `true` the phase accumulator and sine generator
+///   are active (the test-signal gate is still controlled by
+///   `params.test_signal` at runtime).
+pub fn build_streams(
+    input_device: &cpal::Device,
+    output_device: &cpal::Device,
+    sample_rate: u32,
+    buffer_size: Option<u32>,
+    channels: u16,
+    params: &TonismParams,
+    _ramp_test: bool,
+) -> anyhow::Result<AudioStreams> {
+    let config = cpal::StreamConfig {
+        channels,
+        sample_rate,
+        buffer_size: match buffer_size {
+            None => cpal::BufferSize::Default,
+            Some(n) => cpal::BufferSize::Fixed(n),
+        },
     };
-    let output_device = match &opts.output_device_name {
-        Some(name) => find_device(&host, name, "output")?,
-        None => host
-            .default_output_device()
-            .context("no default output device available")?,
-    };
+    let channels_usize = channels as usize;
+    let sr = SampleRate::new(sample_rate as f32);
 
-    println!("Using input device:  {:?}", device_label(&input_device));
-    println!("Using output device: {:?}", device_label(&output_device));
+    // Build fresh audio-side smoothed readers from the GUI handles.
+    let mut input_gain_audio = params.input_gain.build_smoothed();
+    let mut output_gain_audio = params.output_gain.build_smoothed();
+    input_gain_audio.prepare(sr);
+    output_gain_audio.prepare(sr);
+    input_gain_audio.snap_to_target();
+    output_gain_audio.snap_to_target();
 
-    let config: cpal::StreamConfig = input_device.default_input_config()?.into();
-    let channels = config.channels as usize;
-    let sr = SampleRate::new(config.sample_rate as f32);
-
-    // Production smoothing (20 ms) is inaudible as a fade but
-    // click-free. The `--ramp` test overrides to a longer time so the
-    // smoother's curve is audibly perceptible.
-    let smoothing_time_secs = if opts.ramp_test {
-        RAMP_SMOOTHING_SECS
-    } else {
-        TonismParams::PRODUCTION_SMOOTHING_SECS
-    };
-    let (gui_params, mut audio_params) = TonismParams::new(smoothing_time_secs);
-    audio_params.input_gain.prepare(sr);
-    audio_params.output_gain.prepare(sr);
-    audio_params.input_gain.snap_to_target();
-    audio_params.output_gain.snap_to_target();
+    // Clone the bool params for the callbacks.
+    let bypass = params.bypass.clone();
+    let test_signal = params.test_signal.clone();
 
     // Ring buffer (same shape as Phase A/B).
-    let latency_frames = (LATENCY_MS / 1_000.0) * config.sample_rate as f32;
+    let latency_frames = (LATENCY_MS / 1_000.0) * sample_rate as f32;
     assert!(
         CAPTURE_LEN > latency_frames as usize,
         "CAPTURE_LEN ({CAPTURE_LEN}) must exceed ring pre-fill ({} frames) \
          so the latency meter can capture the echo",
         latency_frames as usize,
     );
-    let latency_samples = latency_frames as usize * channels;
+    let latency_samples = latency_frames as usize * channels_usize;
     let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
     for _ in 0..latency_samples {
         producer
@@ -218,13 +207,6 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
     };
     gain_block.prepare(sr, MAX_BLOCK_SIZE);
     gain_block.reset();
-
-    let TonismParamsAudio {
-        input_gain: mut input_gain_audio,
-        output_gain: mut output_gain_audio,
-        bypass,
-        test_signal,
-    } = audio_params;
 
     // LatencyMeter (C5) — captures loopback on channel 0, emits impulses.
     let mut latency_meter = LatencyMeter::default();
@@ -273,7 +255,7 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
                     in_gain.value()
                 };
 
-                for ch in 0..channels {
+                for ch in 0..channels_usize {
                     let raw = if is_test_signal {
                         sine
                     } else {
@@ -284,7 +266,7 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
                         fell_behind = true;
                     }
                 }
-                frame_start += channels;
+                frame_start += channels_usize;
             }
             if fell_behind {
                 input_xrun.bump();
@@ -313,13 +295,13 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
                 latency_meter.disarm();
             } else {
                 // Deinterleave channel 0 → scratch, process, write back.
-                let n_frames = data.len() / channels;
+                let n_frames = data.len() / channels_usize;
                 for i in 0..n_frames {
-                    ch0_scratch[i] = data[i * channels];
+                    ch0_scratch[i] = data[i * channels_usize];
                 }
                 latency_meter.process(&mut ch0_scratch[..n_frames]);
                 for i in 0..n_frames {
-                    data[i * channels] = ch0_scratch[i];
+                    data[i * channels_usize] = ch0_scratch[i];
                 }
 
                 gain_block.process(data);
@@ -329,10 +311,10 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
                     let out_gain_db = output_gain_audio.next();
                     let out_gain: GainLinear = Decibels::new(out_gain_db).into();
                     let mul = out_gain.value();
-                    for ch in 0..channels {
+                    for ch in 0..channels_usize {
                         data[frame_start + ch] *= mul;
                     }
-                    frame_start += channels;
+                    frame_start += channels_usize;
                 }
             }
 
@@ -351,10 +333,9 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
     input_stream.play()?;
     output_stream.play()?;
 
-    Ok(AudioSession {
+    Ok(AudioStreams {
         _input_stream: input_stream,
         _output_stream: output_stream,
-        gui_params,
         xrun_counter,
         latency_handle,
         sample_rate: sample_rate_shared,
@@ -374,40 +355,72 @@ fn setup_audio(opts: &CliOpts) -> anyhow::Result<AudioSession> {
 /// - `--output <name>` — select output device by name substring
 pub fn run_gui() -> anyhow::Result<()> {
     let opts = parse_cli();
-    let AudioSession {
-        _input_stream,
-        _output_stream,
-        gui_params,
-        xrun_counter,
-        latency_handle,
-        sample_rate,
-        ring_latency_frames,
-    } = setup_audio(&opts)?;
+
+    // Load persisted config.
+    let config = crate::config::load_config();
+
+    // Create params once — they survive the app lifetime.
+    let smoothing_time_secs = if opts.ramp_test {
+        RAMP_SMOOTHING_SECS
+    } else {
+        TonismParams::PRODUCTION_SMOOTHING_SECS
+    };
+    let (gui_params, _initial_audio_params) = TonismParams::new(smoothing_time_secs);
+
+    // Resolve initial device config using the device module.
+    let host = cpal::default_host();
+    let (resolved, inputs, outputs) = crate::device::resolve_initial_config(
+        &host,
+        &config,
+        opts.input_device_name.as_deref(),
+        opts.output_device_name.as_deref(),
+    )?;
+
+    // Find indices of the resolved devices in the lists for the GUI dropdowns.
+    let input_idx = find_device_index(&inputs, &resolved.input_device);
+    let output_idx = find_device_index(&outputs, &resolved.output_device);
+
+    println!("Using input device:  {:?}", device_label(&resolved.input_device));
+    println!("Using output device: {:?}", device_label(&resolved.output_device));
+
+    // Build initial streams.
+    let streams = build_streams(
+        &resolved.input_device,
+        &resolved.output_device,
+        resolved.sample_rate,
+        resolved.buffer_size,
+        resolved.channels,
+        &gui_params,
+        opts.ramp_test,
+    )?;
 
     if opts.ramp_test {
         spawn_ramp_thread(gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }
 
-    println!("\nPlaying with {LATENCY_MS:.0} ms of buffered latency.");
-    println!("Close the window to stop.\n");
+    println!("\nPlaying. Close the window to stop.\n");
 
     eframe::run_native(
         "Tonism",
         crate::gui::standalone::native_options(),
-        Box::new(|cc| {
+        Box::new(move |cc| {
             Ok(Box::new(crate::gui::standalone::TonismApp::new(
                 cc,
                 gui_params,
-                xrun_counter,
-                latency_handle,
-                sample_rate,
-                ring_latency_frames,
+                streams,
+                host,
+                inputs,
+                outputs,
+                input_idx,
+                output_idx,
+                resolved.sample_rate,
+                resolved.buffer_size,
+                config,
             )))
         }),
     )
     .map_err(|e| anyhow::anyhow!("eframe error: {e}"))?;
-    println!("Stopped.");
     Ok(())
 }
 
@@ -415,10 +428,42 @@ pub fn run_gui() -> anyhow::Result<()> {
 /// `src/bin/feedback.rs` for iteration without a GUI.
 pub fn run() -> anyhow::Result<()> {
     let opts = parse_cli();
-    let session = setup_audio(&opts)?;
+
+    // Load persisted config.
+    let config = crate::config::load_config();
+
+    // Create params once — they survive for the duration of the session.
+    let smoothing_time_secs = if opts.ramp_test {
+        RAMP_SMOOTHING_SECS
+    } else {
+        TonismParams::PRODUCTION_SMOOTHING_SECS
+    };
+    let (gui_params, _initial_audio_params) = TonismParams::new(smoothing_time_secs);
+
+    // Resolve devices.
+    let host = cpal::default_host();
+    let (resolved, _, _) = crate::device::resolve_initial_config(
+        &host,
+        &config,
+        opts.input_device_name.as_deref(),
+        opts.output_device_name.as_deref(),
+    )?;
+
+    println!("Using input device:  {:?}", device_label(&resolved.input_device));
+    println!("Using output device: {:?}", device_label(&resolved.output_device));
+
+    let streams = build_streams(
+        &resolved.input_device,
+        &resolved.output_device,
+        resolved.sample_rate,
+        resolved.buffer_size,
+        resolved.channels,
+        &gui_params,
+        opts.ramp_test,
+    )?;
 
     if opts.ramp_test {
-        spawn_ramp_thread(session.gui_params.output_gain.clone());
+        spawn_ramp_thread(gui_params.output_gain.clone());
         println!("\n[ramp] mode ON — output_gain will cycle -60 → 0 → -60 dB.");
     }
 
@@ -428,7 +473,7 @@ pub fn run() -> anyhow::Result<()> {
     let mut line = String::new();
     std::io::stdin().read_line(&mut line)?;
 
-    drop(session);
+    drop(streams);
     println!("Stopped.");
     Ok(())
 }

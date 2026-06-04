@@ -1,6 +1,8 @@
 # cpal-direct standalone — WIP log
 
-**Status (25/05/2026):** Phase G implemented — PR open. Pending manual verification.
+**Status (04/06/2026):** Phase H implemented — PR open. The cpal-direct
+pivot is feature-complete; only the manual 30-min stress gate (G5) and
+Windows re-verification remain.
 
 ## Phases completed
 
@@ -12,6 +14,7 @@
 | **D — egui window + audio coexistence** | [#11](https://github.com/Z3U2/tonism/pull/11) (merged) | `eframe` + `egui` always-on deps; `src/gui/standalone.rs` (static `TonismApp` via `eframe::App`); `cpal_direct::run_gui()` opens eframe window alongside running streams; `cpal_direct::run()` stays headless for `feedback` binary; audio setup extracted into shared `setup_audio()` helper. ADR-006 committed. | 5-min clean audio on Mac + Windows with window open + repainting at 60 Hz. |
 | **E — GUI ↔ audio param writes wired** | [#12](https://github.com/Z3U2/tonism/pull/12) (merged) | `TonismApp` accepts `TonismParams` + `XrunCounter`; sliders call `FloatParamHandle::set()` on change; checkboxes call `BoolParam::set()` on change; xrun label reads `XrunCounter::read()` each frame. `XrunCounter` instantiated in `setup_audio()`, cloned into both callbacks, bumped on ring over/underflow. | 5-min clean audio on Mac with active slider movement. No xrun increments, no audible artifacts. |
 | **F — latency meter + bypass + test signal** | [#13](https://github.com/Z3U2/tonism/pull/13) (merged) | Bypass toggle, 440 Hz test-signal injection, LatencyMeter wired into cpal output callback (ch0 deinterleave via scratch buffer), GUI "Measure latency" button + readout, `--input`/`--output` CLI flags. Latency meter: single-impulse design with output muting, ring-delay subtraction. | 5-min clean audio on Mac with BlackHole loopback. Latency measurement consistent at 64 ms (BlackHole 16ch scheduling overhead). |
+| **G — device picker + config persistence + hot-swap** | [#14](https://github.com/Z3U2/tonism/pull/14) (merged) | New: `src/config.rs` (`confy`+`serde` `TonismConfig`), `src/device.rs` (enumeration, SR/buffer negotiation, `resolve_initial_config` with CLI > saved > default fallback). Refactor: `setup_audio()` → `build_streams()` (per-device rebuild) + one-time param creation; `AudioSession` → `AudioStreams`. GUI device picker (input/output/SR/buffer ComboBoxes + Apply/Refresh); hot-swap rebuild with params surviving via `Arc` atomics + `FloatParamHandle::build_smoothed()`. | macOS verified: device switch, SR/buffer change, config persistence across restart, CLI override, param survival across rebuild. **Windows: deferred.** |
 
 ## Decisions locked
 
@@ -36,14 +39,25 @@
 - **confy + serde for config** — persists `TonismConfig` to
   `~/Library/Application Support/tonism/` (macOS) or `%APPDATA%\tonism\`
   (Windows) via `confy` crate. TOML format. Decided in Phase G.
+- **ADR-007 — composition root** — the single A5 composition root is
+  `src/cpal_direct.rs`, wired from `main.rs`. Closes the long-standing
+  "composition-root location" TBD in `architecture.md`. Decided in Phase H.
+- **ADR-008 — lock-free GUI ↔ audio primitive** — the atomic-based
+  parameter system in `src/params.rs` (`FloatParamHandle` /
+  `SmoothedFloatParam` over `Arc<AtomicU32>`, `BoolParam` over
+  `Arc<AtomicBool>`) is the F4/A6 primitive. Closes the "lock-free
+  primitive for GUI ↔ audio messaging" TBD. Decided in Phase H.
 
 ## Open follow-ups
 
-- **CI gate for `--features plugin-export`** — spec calls for both feature
-  configurations in CI so the dormant `Plugin` impl can't silently drift.
-  Small GHA workflow PR, not yet open.
+- ~~**CI gate for `--features plugin-export`**~~ — **landed in Phase H.**
+  `.github/workflows/ci.yml` runs `fmt` once, then a `check` matrix over
+  `{default, plugin-export}` (clippy `-D warnings` + tests) and an
+  `alloc-guard` compile job for `debug-assert-no-alloc`. Runner is
+  `macos-latest` (cpal/eframe need CoreAudio/WASAPI; Linux audio/GUI
+  system-deps are fragile and unsupported).
 
-## Phase G — Device picker UX + config persistence (open)
+## Phase G — Device picker UX + config persistence (merged, PR #14)
 
 New modules and refactoring in a single PR:
 
@@ -71,18 +85,42 @@ Key refactoring:
 - Config fallback chain: CLI flags > persisted config > system default.
 - `find_device()` replaced by `device::resolve_initial_config()`.
 
-Pending: manual verification session.
+macOS verification: done. Windows: deferred.
 
-## Phases ahead
+## Phase H — Cutover & cleanup (open)
 
-| Phase | What lands                                                                                                                                                                                                                                |
-| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **H** | Cutover: remove the `nih_export_standalone!` runtime use (currently gated on `plugin-export`); update `docs/standards/architecture.md` "pending decisions" section (composition-root location + lock-free GUI↔audio primitive — both now resolved). |
+Single PR, mostly docs + hygiene (the structural cutover already landed
+incrementally across D–G):
 
-## Verification baseline (last run: 25/05/2026)
+| ID  | Title                                                       | Status |
+| --- | ----------------------------------------------------------- | ------ |
+| H01 | Resolve `architecture.md` A5 + pending decisions; add ADR-007/008 | Done   |
+| H02 | Fix stale `nih-plug owns the loop` comments (`src/audio/backend.rs`) | Done   |
+| H03 | CI workflow (`.github/workflows/ci.yml`) — feature matrix    | Done   |
+| H04 | Repo hygiene: rustfmt drift + clippy fixes (pre-existing F/G) | Done   |
+| H05 | wip.md update                                               | Done   |
 
-- **Default features** — 68 tests pass (60 lib + 5 integration + 3 smoke; 1 doctest ignored). `eframe` + `egui` + `serde` + `confy` in dep graph; `nih_plug` absent.
-- **`--features plugin-export`** — compiles clean.
+What landed:
+- **`main.rs` cutover confirmed** — default `run()` → `cpal_direct::run_gui()`;
+  `nih_export_standalone!` is invoked only under `--features plugin-export`.
+  No code change was needed (the cutover landed across earlier phases);
+  Phase H documents it as the final state via ADR-007.
+- **ADR-007** (composition root = `src/cpal_direct.rs`) and **ADR-008**
+  (lock-free param primitive = `src/params.rs` atomics); `architecture.md`
+  A5 and the "pending decisions" list updated to point at them.
+- **CI** — `.github/workflows/ci.yml` (see Open follow-ups).
+- **Hygiene** — `cargo fmt` applied to F/G drift (5 files, whitespace/reflow
+  only); 5 pre-existing clippy findings fixed (4 `collapsible_if` → edition-2024
+  let-chains, 1 `modulo_one` guard test annotated with `#[allow]` + rationale).
+
+Pending (hardware gates, not code):
+- **G5 30-min stress session** with parameter changes — the MVP end-to-end bar.
+- **Windows re-verification** of the device picker + clean-audio session.
+
+## Verification baseline (last run: 04/06/2026, Phase H)
+
+- **Default features** — 68 tests pass (60 lib + 5 integration + 3 smoke; 1 doctest ignored). `cargo clippy --all-targets -- -D warnings` clean; `cargo fmt --check` clean. `eframe` + `egui` + `serde` + `confy` in dep graph; `nih_plug` absent.
+- **`--features plugin-export`** — 69 tests pass (61 lib + 5 + 3); `cargo clippy --all-targets --features plugin-export -- -D warnings` clean.
 - **`--features debug-assert-no-alloc`** — compiles clean.
 - **`--features plugin-export,debug-assert-no-alloc`** — compiles clean.
 - **`cargo run`** — eframe window opens with device picker panel; dropdowns populated with system devices; Apply rebuilds streams; sliders, bypass, test signal, xrun counter, latency meter all functional.

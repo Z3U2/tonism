@@ -13,7 +13,7 @@ The codebase follows **hexagonal architecture** (Alistair Cockburn) with a **fun
 | A2 | The realtime audio thread is the most stringent shell: no allocation, no locking, no syscalls inside the per-buffer path. | Violations cause underruns — the primary failure mode for the [Capture](../specs/product-architecture.md#product-layers) and [Render](../specs/product-architecture.md#product-layers) layers. |
 | A3 | Dependencies point inward. Presentation (GUI) and Infrastructure (audio I/O, persistence) depend on Domain (DSP, signal-chain model); Domain depends on neither. | |
 | A4 | External dependencies are reached only through traits declared in the domain. | Lets us swap the GUI framework, plugin framework, or audio backend without touching the DSP core. |
-| A5 | One composition root. DI wiring lives in a single place at startup. | TBD where — depends on plugin-framework choice. |
+| A5 | One composition root. DI wiring lives in a single place at startup. | Resolved: `src/cpal_direct.rs`, wired from `main.rs`. See [ADR-007](../adr/007-composition-root.md). |
 | A6 | No layer-skipping. The GUI does not poke audio I/O directly; the audio thread does not call into the GUI. | UI ↔ audio communication goes through a lock-free channel owned by the domain. |
 
 ## Crate / module layout
@@ -34,5 +34,10 @@ These are referenced as `TBD` throughout this file and will become ADRs as they'
 
 - Plugin framework (nih-plug is the leading candidate per [ADR-001](../adr/001-language-choice.md), not yet committed).
 - Crate / workspace layout.
-- Composition-root location.
-- The exact lock-free primitive for GUI ↔ audio messaging.
+
+## Resolved decisions
+
+Previously listed as pending; each links to the ADR that closed it:
+
+- **Composition-root location** — resolved by [ADR-007](../adr/007-composition-root.md): the single composition root is `src/cpal_direct.rs`, wired from `main.rs`.
+- **Lock-free primitive for GUI ↔ audio messaging** — resolved by [ADR-008](../adr/008-lockfree-gui-audio-param.md): the atomic-based parameter system in `src/params.rs` (`FloatParamHandle` / `SmoothedFloatParam` / `BoolParam`).

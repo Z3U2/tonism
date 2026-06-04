@@ -169,8 +169,8 @@ fn deinterleave_round_trip_stereo() {
 #[test]
 fn ring_loopback_simulation() {
     let sr = SampleRate::new(48_000.0);
-    let ring_delay: usize = 7200;   // 150 ms ring pre-fill
-    let hw_delay: usize = 2048;     // simulated hardware round-trip
+    let ring_delay: usize = 7200; // 150 ms ring pre-fill
+    let hw_delay: usize = 2048; // simulated hardware round-trip
     let total_delay = ring_delay + hw_delay; // 9248 frames
     let buf_size: usize = 512;
 
@@ -214,10 +214,7 @@ fn ring_loopback_simulation() {
         }
     }
 
-    assert_eq!(
-        handle.state() as u8, 2,
-        "meter did not reach Done"
-    );
+    assert_eq!(handle.state() as u8, 2, "meter did not reach Done");
 
     let mut captured = Vec::with_capacity(CAPTURE_LEN);
     handle.read_capture_into(&mut captured);
@@ -229,10 +226,7 @@ fn ring_loopback_simulation() {
         ring_delay,
         sr,
     );
-    assert!(
-        result.is_ok(),
-        "measure_latency failed: {result:?}"
-    );
+    assert!(result.is_ok(), "measure_latency failed: {result:?}");
 
     let ms = result.unwrap().value();
     let expected_frames = hw_delay;

@@ -380,8 +380,14 @@ pub fn run_gui() -> anyhow::Result<()> {
     let input_idx = find_device_index(&inputs, &resolved.input_device);
     let output_idx = find_device_index(&outputs, &resolved.output_device);
 
-    println!("Using input device:  {:?}", device_label(&resolved.input_device));
-    println!("Using output device: {:?}", device_label(&resolved.output_device));
+    println!(
+        "Using input device:  {:?}",
+        device_label(&resolved.input_device)
+    );
+    println!(
+        "Using output device: {:?}",
+        device_label(&resolved.output_device)
+    );
 
     // Build initial streams.
     let streams = build_streams(
@@ -449,8 +455,14 @@ pub fn run() -> anyhow::Result<()> {
         opts.output_device_name.as_deref(),
     )?;
 
-    println!("Using input device:  {:?}", device_label(&resolved.input_device));
-    println!("Using output device: {:?}", device_label(&resolved.output_device));
+    println!(
+        "Using input device:  {:?}",
+        device_label(&resolved.input_device)
+    );
+    println!(
+        "Using output device: {:?}",
+        device_label(&resolved.output_device)
+    );
 
     let streams = build_streams(
         &resolved.input_device,

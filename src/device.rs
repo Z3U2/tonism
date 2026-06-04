@@ -196,21 +196,19 @@ pub fn compute_common_sample_rates(input: &DeviceInfo, output: &DeviceInfo) -> V
 /// If either device has `buffer_size_range == None`, we treat it as
 /// unconstrained (any size is fine from that device's perspective). When both
 /// are `None`, only `[None]` is returned.
-pub fn compute_available_buffer_sizes(
-    input: &DeviceInfo,
-    output: &DeviceInfo,
-) -> Vec<Option<u32>> {
+pub fn compute_available_buffer_sizes(input: &DeviceInfo, output: &DeviceInfo) -> Vec<Option<u32>> {
     let mut result = vec![None];
 
-    let effective_range: Option<(u32, u32)> = match (input.buffer_size_range, output.buffer_size_range) {
-        (Some((in_lo, in_hi)), Some((out_lo, out_hi))) => {
-            let lo = in_lo.max(out_lo);
-            let hi = in_hi.min(out_hi);
-            if lo <= hi { Some((lo, hi)) } else { None }
-        }
-        (Some(r), None) | (None, Some(r)) => Some(r),
-        (None, None) => None,
-    };
+    let effective_range: Option<(u32, u32)> =
+        match (input.buffer_size_range, output.buffer_size_range) {
+            (Some((in_lo, in_hi)), Some((out_lo, out_hi))) => {
+                let lo = in_lo.max(out_lo);
+                let hi = in_hi.min(out_hi);
+                if lo <= hi { Some((lo, hi)) } else { None }
+            }
+            (Some(r), None) | (None, Some(r)) => Some(r),
+            (None, None) => None,
+        };
 
     if let Some((lo, hi)) = effective_range {
         for &size in POW2_BUFFER_SIZES {
@@ -244,12 +242,23 @@ pub fn resolve_initial_config(
 ) -> anyhow::Result<(ResolvedDeviceConfig, Vec<DeviceInfo>, Vec<DeviceInfo>)> {
     let (inputs, outputs) = enumerate_devices(host);
 
-    let input_device = resolve_device(host, &inputs, cli_input, config.input_device_id.as_deref(), true)
-        .context("resolving input device")?;
+    let input_device = resolve_device(
+        host,
+        &inputs,
+        cli_input,
+        config.input_device_id.as_deref(),
+        true,
+    )
+    .context("resolving input device")?;
 
-    let output_device =
-        resolve_device(host, &outputs, cli_output, config.output_device_id.as_deref(), false)
-            .context("resolving output device")?;
+    let output_device = resolve_device(
+        host,
+        &outputs,
+        cli_output,
+        config.output_device_id.as_deref(),
+        false,
+    )
+    .context("resolving output device")?;
 
     // Pick sample rate: prefer config value if it appears in both devices,
     // otherwise fall back to the first common rate, then 48000.
@@ -313,7 +322,9 @@ fn resolve_device(
     // 1. CLI substring match.
     if let Some(name) = cli_name {
         let name_lower = name.to_lowercase();
-        let found = list.iter().find(|d| d.name.to_lowercase().contains(&name_lower));
+        let found = list
+            .iter()
+            .find(|d| d.name.to_lowercase().contains(&name_lower));
         match found {
             Some(info) => {
                 tracing::info!("CLI: using {direction} device \"{}\"", info.name);
@@ -330,16 +341,14 @@ fn resolve_device(
     }
 
     // 2. Saved-config DeviceId lookup.
-    if let Some(id_str) = config_id {
-        if let Ok(device_id) = cpal::DeviceId::from_str(id_str) {
-            if let Some(dev) = host.device_by_id(&device_id) {
-                tracing::info!("Config: using {direction} device \"{}\"", id_str);
-                return Ok(dev);
-            }
-            tracing::warn!(
-                "Config {direction} device \"{id_str}\" not found, falling back to default"
-            );
+    if let Some(id_str) = config_id
+        && let Ok(device_id) = cpal::DeviceId::from_str(id_str)
+    {
+        if let Some(dev) = host.device_by_id(&device_id) {
+            tracing::info!("Config: using {direction} device \"{}\"", id_str);
+            return Ok(dev);
         }
+        tracing::warn!("Config {direction} device \"{id_str}\" not found, falling back to default");
     }
 
     // 3. System default.
@@ -362,10 +371,10 @@ fn resolve_device(
 /// Choose a sample rate: prefer the config value if it is in `common_rates`,
 /// otherwise take the first common rate, otherwise 48000.
 fn pick_sample_rate(config_rate: Option<u32>, common_rates: &[u32]) -> u32 {
-    if let Some(r) = config_rate {
-        if common_rates.contains(&r) {
-            return r;
-        }
+    if let Some(r) = config_rate
+        && common_rates.contains(&r)
+    {
+        return r;
     }
     common_rates.first().copied().unwrap_or(48000)
 }
@@ -374,10 +383,10 @@ fn pick_sample_rate(config_rate: Option<u32>, common_rates: &[u32]) -> u32 {
 /// (the list produced by [`compute_available_buffer_sizes`], which always
 /// starts with `None`), otherwise `None` (Default).
 fn pick_buffer_size(config_buf: Option<u32>, available: &[Option<u32>]) -> Option<u32> {
-    if let Some(b) = config_buf {
-        if available.contains(&Some(b)) {
-            return Some(b);
-        }
+    if let Some(b) = config_buf
+        && available.contains(&Some(b))
+    {
+        return Some(b);
     }
     None // Default
 }
@@ -415,7 +424,10 @@ mod tests {
     fn common_rates_intersection() {
         let input = mock_device_info(vec![44100, 48000, 96000], None);
         let output = mock_device_info(vec![48000, 96000, 192000], None);
-        assert_eq!(compute_common_sample_rates(&input, &output), vec![48000, 96000]);
+        assert_eq!(
+            compute_common_sample_rates(&input, &output),
+            vec![48000, 96000]
+        );
     }
 
     #[test]

@@ -1,0 +1,102 @@
+# CI workflow for Tonism — real-time guitar processor (Rust).
+#
+# RUNNER: macos-latest is used instead of ubuntu-latest because:
+#   - cpal requires CoreAudio (macOS) or WASAPI (Windows) — the supported
+#     target platforms. On Linux, cpal needs libasound2-dev and eframe/egui
+#     needs X11/Wayland system libraries that are fragile to provision and
+#     represent an unsupported build target for this project.
+#   - macOS runners give clean builds that match the developer and end-user
+#     environment without extra apt-get setup.
+#
+# FEATURE GATES (confirmed from Cargo.toml [features]):
+#   plugin-export          — nih-plug VST3/CLAP surface (dormant by default,
+#                            CI-tested so it cannot silently drift)
+#   debug-assert-no-alloc  — panics on any heap allocation in the audio
+#                            callback; enforces architecture rules A2 + J1
+
+name: CI
+
+on:
+  # Run on pushes to main (e.g. after a PR merges) and on every pull request.
+  # Pushes to ephemeral feature branches do NOT trigger a standalone run — the
+  # pull_request event already covers them, so we avoid duplicate CI runs.
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Prevent Cargo from fetching index on every job; the cache restores it.
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ── Format (runs once, no matrix needed) ──────────────────────────────────
+  fmt:
+    name: Format check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Honour rust-toolchain.toml (channel = "stable"); add components
+      # explicitly so the action does not have to re-read the file.
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+  # ── Clippy + Tests (matrix over feature configs) ──────────────────────────
+  check:
+    name: Check (${{ matrix.label }})
+    runs-on: macos-latest   # See runner rationale at top of file
+    needs: fmt
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: default
+            features: ""
+          - label: plugin-export
+            features: "--features plugin-export"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      # Cache compiled dependencies across runs (keyed on OS + toolchain +
+      # Cargo.lock so a lock-file bump invalidates the cache cleanly).
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo clippy ${{ matrix.features }}
+        run: cargo clippy --all-targets ${{ matrix.features }} -- -D warnings
+
+      - name: cargo test ${{ matrix.features }}
+        run: cargo test ${{ matrix.features }}
+
+  # ── Alloc-guard compile check ─────────────────────────────────────────────
+  alloc-guard:
+    name: Compile (debug-assert-no-alloc)
+    runs-on: macos-latest   # See runner rationale at top of file
+    needs: fmt
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo build --features debug-assert-no-alloc
+        run: cargo build --features debug-assert-no-alloc

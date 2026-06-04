@@ -310,10 +310,7 @@ mod tests {
                     "buf[{i}] should be impulse 1.0, got {s}"
                 );
             } else {
-                assert!(
-                    s.abs() < 1e-9,
-                    "buf[{i}] should be muted 0.0, got {s}"
-                );
+                assert!(s.abs() < 1e-9, "buf[{i}] should be muted 0.0, got {s}");
             }
         }
     }
@@ -347,6 +344,9 @@ mod tests {
     }
 
     #[test]
+    // `N_IMPULSES` is 1 today, so `CAPTURE_LEN % N_IMPULSES` is trivially 0; this
+    // assert is a guard that stays meaningful if `N_IMPULSES` ever changes.
+    #[allow(clippy::modulo_one)]
     fn meter_default_has_n_impulses_module_constants_consistent() {
         assert_eq!(
             CAPTURE_LEN % N_IMPULSES,

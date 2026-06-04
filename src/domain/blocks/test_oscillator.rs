@@ -95,7 +95,10 @@ mod tests {
         }
         // After one period, should be near zero again.
         let val = osc.next_sample();
-        assert!(val.abs() < 0.1, "expected near-zero after one period, got {val}");
+        assert!(
+            val.abs() < 0.1,
+            "expected near-zero after one period, got {val}"
+        );
     }
 
     #[test]
@@ -106,7 +109,10 @@ mod tests {
             osc.next_sample();
         }
         osc.reset();
-        assert!((osc.next_sample()).abs() < 1e-6, "should be sin(0) after reset");
+        assert!(
+            (osc.next_sample()).abs() < 1e-6,
+            "should be sin(0) after reset"
+        );
     }
 
     #[test]

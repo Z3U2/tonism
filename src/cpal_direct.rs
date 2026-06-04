@@ -34,15 +34,15 @@ use std::sync::atomic::AtomicU32;
 use cpal::traits::{DeviceTrait, StreamTrait};
 
 use crate::audio::latency::{LatencyHandle, LatencyMeter};
-use crate::domain::buffer::{deinterleave_channel, interleave_channel};
 use crate::audio::ring::{AudioRing, LATENCY_MS};
 use crate::audio::rt_guard::assert_no_alloc_audio;
 use crate::audio::xrun::XrunCounter;
+use crate::device::{device_label, err_fn};
 use crate::domain::blocks::gain::Gain;
 use crate::domain::blocks::test_oscillator::TestOscillator;
+use crate::domain::buffer::{deinterleave_channel, interleave_channel};
 use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
-use crate::device::{device_label, err_fn};
 use crate::params::{FloatParamHandle, TonismParams};
 
 /// Upper bound on samples per cpal callback, passed to [`Process::prepare`]
@@ -479,4 +479,3 @@ fn spawn_ramp_thread(handle: FloatParamHandle) {
         }
     });
 }
-

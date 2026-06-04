@@ -12,13 +12,11 @@
 /// # Panics
 ///
 /// Panics if `out.len() < n_frames` or `channel >= channels`.
-pub fn deinterleave_channel(
-    interleaved: &[f32],
-    channel: usize,
-    channels: usize,
-    out: &mut [f32],
-) {
-    assert!(channel < channels, "channel {channel} >= channels {channels}");
+pub fn deinterleave_channel(interleaved: &[f32], channel: usize, channels: usize, out: &mut [f32]) {
+    assert!(
+        channel < channels,
+        "channel {channel} >= channels {channels}"
+    );
     let n_frames = interleaved.len() / channels;
     for i in 0..n_frames {
         out[i] = interleaved[i * channels + channel];
@@ -39,7 +37,10 @@ pub fn interleave_channel(
     channels: usize,
     source: &[f32],
 ) {
-    assert!(channel < channels, "channel {channel} >= channels {channels}");
+    assert!(
+        channel < channels,
+        "channel {channel} >= channels {channels}"
+    );
     let n_frames = interleaved.len() / channels;
     for i in 0..n_frames {
         interleaved[i * channels + channel] = source[i];

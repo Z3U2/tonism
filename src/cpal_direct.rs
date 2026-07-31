@@ -28,26 +28,22 @@
 //! ring over/underflows bump the counter, and the eframe app reads it
 //! each frame for the live display.
 
-use std::f32::consts::TAU;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU32;
 
 use cpal::traits::{DeviceTrait, StreamTrait};
-use rtrb::RingBuffer;
 
-use crate::audio::latency::{CAPTURE_LEN, LatencyHandle, LatencyMeter};
+use crate::audio::latency::{LatencyHandle, LatencyMeter};
+use crate::audio::ring::{AudioRing, LATENCY_MS};
+use crate::audio::rt_guard::assert_no_alloc_audio;
 use crate::audio::xrun::XrunCounter;
+use crate::device::{device_label, err_fn};
 use crate::domain::blocks::gain::Gain;
+use crate::domain::blocks::test_oscillator::TestOscillator;
+use crate::domain::buffer::{deinterleave_channel, interleave_channel};
 use crate::domain::process::Process;
 use crate::domain::types::{Decibels, GainLinear, SampleRate};
 use crate::params::{FloatParamHandle, TonismParams};
-
-/// Delay between input and output, in milliseconds. Absorbs clock drift
-/// between input and output devices that are not running on the same
-/// hardware clock. Matches the upstream `cpal/examples/feedback.rs`
-/// default; will shrink in Phase G when device-pair / aggregate-device
-/// assumptions land.
-const LATENCY_MS: f32 = 150.0;
 
 /// Upper bound on samples per cpal callback, passed to [`Process::prepare`]
 /// so stateful domain blocks can pre-allocate. Generous so it covers
@@ -60,29 +56,6 @@ const MAX_BLOCK_SIZE: usize = 8192 * 8;
 /// change." The ramp test exists to demonstrate the smoother audibly,
 /// so it gets a duration that sounds like a real fade.
 const RAMP_SMOOTHING_SECS: f32 = 1.0;
-
-// ----------------------------------------------------------------------
-// C9: A2 enforcement (cfg-gated).
-// ----------------------------------------------------------------------
-
-/// Wrap an audio-thread closure in [`assert_no_alloc::assert_no_alloc`]
-/// when the `debug-assert-no-alloc` feature is on; pass through
-/// otherwise. The no-op version compiles to a direct call so there is
-/// no overhead in release builds.
-///
-/// Pairs with the `#[global_allocator]` declaration in each binary
-/// (`src/main.rs`, `src/bin/feedback.rs`) which is also cfg-gated.
-#[cfg(feature = "debug-assert-no-alloc")]
-#[inline]
-fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
-    assert_no_alloc::assert_no_alloc(f)
-}
-
-#[cfg(not(feature = "debug-assert-no-alloc"))]
-#[inline(always)]
-fn assert_no_alloc_audio<F: FnOnce() -> R, R>(f: F) -> R {
-    f()
-}
 
 // ----------------------------------------------------------------------
 // Entry point.
@@ -186,20 +159,9 @@ pub fn build_streams(
     let test_signal = params.test_signal.clone();
 
     // Ring buffer (same shape as Phase A/B).
-    let latency_frames = (LATENCY_MS / 1_000.0) * sample_rate as f32;
-    assert!(
-        CAPTURE_LEN > latency_frames as usize,
-        "CAPTURE_LEN ({CAPTURE_LEN}) must exceed ring pre-fill ({} frames) \
-         so the latency meter can capture the echo",
-        latency_frames as usize,
-    );
-    let latency_samples = latency_frames as usize * channels_usize;
-    let (mut producer, mut consumer) = RingBuffer::<f32>::new(latency_samples * 2);
-    for _ in 0..latency_samples {
-        producer
-            .push(0.0)
-            .expect("ring has 2× headroom for the pre-fill");
-    }
+    let ring = AudioRing::new(sample_rate, channels);
+    let ring_latency_frames = ring.latency_frames;
+    let (mut producer, mut consumer) = (ring.producer, ring.consumer);
 
     // Domain Gain block.
     let mut gain_block = Gain {
@@ -231,9 +193,9 @@ pub fn build_streams(
     let input_bypass = bypass.clone();
     let output_bypass = bypass;
 
-    // Phase accumulator for the 440 Hz test-signal sine generator.
-    let phase_inc = TAU * 440.0 / sr.value();
-    let mut phase: f32 = 0.0;
+    // Test-signal sine generator.
+    let mut test_osc = TestOscillator::new();
+    test_osc.prepare(sr, MAX_BLOCK_SIZE);
 
     // Input callback: optionally inject test signal, apply input gain
     // (skipped under bypass), push to ring.
@@ -244,8 +206,7 @@ pub fn build_streams(
             let mut fell_behind = false;
             let mut frame_start = 0;
             while frame_start < data.len() {
-                let sine = phase.sin();
-                phase = (phase + phase_inc) % TAU;
+                let sine = test_osc.next_sample();
 
                 let mul = if is_bypass {
                     1.0
@@ -296,13 +257,9 @@ pub fn build_streams(
             } else {
                 // Deinterleave channel 0 → scratch, process, write back.
                 let n_frames = data.len() / channels_usize;
-                for i in 0..n_frames {
-                    ch0_scratch[i] = data[i * channels_usize];
-                }
+                deinterleave_channel(data, 0, channels_usize, &mut ch0_scratch);
                 latency_meter.process(&mut ch0_scratch[..n_frames]);
-                for i in 0..n_frames {
-                    data[i * channels_usize] = ch0_scratch[i];
-                }
+                interleave_channel(data, 0, channels_usize, &ch0_scratch);
 
                 gain_block.process(data);
 
@@ -339,7 +296,7 @@ pub fn build_streams(
         xrun_counter,
         latency_handle,
         sample_rate: sample_rate_shared,
-        ring_latency_frames: latency_frames as usize,
+        ring_latency_frames,
     })
 }
 
@@ -521,19 +478,4 @@ fn spawn_ramp_thread(handle: FloatParamHandle) {
             }
         }
     });
-}
-
-/// Stream-level error callback. cpal invokes this off the realtime
-/// thread, so plain `eprintln!` is fine.
-fn err_fn(err: cpal::StreamError) {
-    eprintln!("stream error: {err}");
-}
-
-/// Best-effort human-readable device label. Mirrors the pattern used
-/// by `scripts/check_buffer_size.rs`.
-fn device_label(device: &cpal::Device) -> String {
-    device
-        .description()
-        .map(|desc| desc.name().to_string())
-        .unwrap_or_else(|_| "<unnamed>".into())
 }

@@ -10,3 +10,4 @@ release = "cargo build --release"
 test = { command = "cargo test", env = { RUST_LOG = "warn" } }
 doc = "cargo doc --no-deps --open"
 check-buffer = "cargo run --bin check-buffer"
+preflight = "cargo fmt --all --check && cargo clippy --all-targets -- -D warnings && cargo test && cargo build --features debug-assert-no-alloc"

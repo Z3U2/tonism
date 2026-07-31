@@ -9,7 +9,7 @@ use crate::domain::types::SampleRate;
 
 /// Number of samples captured per measurement window.
 /// Must exceed the full round-trip: ring-buffer pre-fill
-/// ([`crate::cpal_direct::LATENCY_MS`]) plus hardware round-trip.
+/// ([`crate::audio::ring::LATENCY_MS`]) plus hardware round-trip.
 /// `setup_audio()` asserts this at startup.
 pub const CAPTURE_LEN: usize = 32768;
 
